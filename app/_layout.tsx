@@ -15,7 +15,7 @@ if (typeof (global as any).Buffer === 'undefined') {
 }
 
 export const unstable_settings = {
-  anchor: '(tabs)',
+  initialRouteName: '(tabs)',
 };
 
 export default function RootLayout() {
@@ -72,8 +72,10 @@ function RootNavigationWithLock() {
 function StackScreenLayout() {
   return (
     <Stack>
+      <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Swift Boda Details' }} />
+      <Stack.Screen name="+not-found" options={{ headerShown: false }} />
     </Stack>
   );
 }
