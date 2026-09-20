@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Dimensions,
   Image,
@@ -20,6 +21,7 @@ import AuthModal from '../../components/AuthModal';
 import { DriverKycOnboardingModal, DriverKycSubmission } from '../../components/DriverKycOnboardingModal';
 import { VehicleCategory } from '../../shared/types';
 import { getActiveRegion } from '../../shared/constants/regions';
+import { generateAndShareReceiptPDF } from '../../services/receiptPdfService';
 
 const { width } = Dimensions.get('window');
 
@@ -111,6 +113,7 @@ export default function HomeScreen() {
   const [selectedRating, setSelectedRating] = useState(5);
   const [selectedTip, setSelectedTip] = useState(0);
   const [selectedCompliments, setSelectedCompliments] = useState<string[]>(['Clean helmet', 'Smooth ride']);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const filteredDestinations = WEST_POKOT_DESTINATIONS.filter((d) =>
     d.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -1646,6 +1649,56 @@ export default function HomeScreen() {
               </View>
             </View>
 
+            {/* PDF Receipt Export Button */}
+            <TouchableOpacity
+              style={styles.pdfReceiptBtn}
+              onPress={async () => {
+                if (activeTrip) {
+                  try {
+                    setIsExportingPdf(true);
+                    await generateAndShareReceiptPDF({
+                      id: activeTrip.id,
+                      createdAt: activeTrip.createdAt || new Date().toISOString(),
+                      completedAt: new Date().toISOString(),
+                      riderName: currentUser?.fullName || 'Valued Passenger',
+                      riderPhone: currentUser?.phoneNumber || '+254712345001',
+                      driverName: activeTrip.driver?.name || 'Kipchoge Chemokil',
+                      driverPhone: activeTrip.driver?.phone || '+254722001122',
+                      vehicleModel: activeTrip.driver?.vehicleModel || 'Bajaj Boxer 150X',
+                      vehiclePlate: activeTrip.driver?.vehiclePlate || 'KMDK 234P',
+                      category: activeTrip.category || 'STANDARD_BODA',
+                      pickupAddress: activeTrip.pickup?.address || userLocation?.address || 'Pickup Point',
+                      destinationAddress: activeTrip.destination?.placeName || activeTrip.destination?.address || 'Destination',
+                      distanceKm: activeTrip.fare?.estimatedDistanceKm || 2.4,
+                      durationMin: activeTrip.fare?.estimatedDurationMin || 7,
+                      baseFare: activeTrip.fare?.baseFare || 50,
+                      distanceFare: activeTrip.fare?.distanceFare || 60,
+                      timeFare: activeTrip.fare?.timeFare || 15,
+                      bookingFee: activeTrip.fare?.bookingFee || 15,
+                      tipAmount: selectedTip,
+                      totalFare: (activeTrip.fare?.totalFare || 140) + selectedTip,
+                      paymentMethod: activeTrip.paymentMethod || 'MPESA',
+                    });
+                  } catch (e) {
+                    // handled
+                  } finally {
+                    setIsExportingPdf(false);
+                  }
+                }
+              }}
+              disabled={isExportingPdf}
+              activeOpacity={0.8}
+            >
+              {isExportingPdf ? (
+                <ActivityIndicator size="small" color="#10B981" />
+              ) : (
+                <>
+                  <Ionicons name="document-text-outline" size={18} color="#10B981" />
+                  <Text style={styles.pdfReceiptText}>Download Official PDF Receipt</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={styles.submitRatingBtn}
               onPress={() => {
@@ -2931,6 +2984,24 @@ const styles = StyleSheet.create({
   receiptTotalValue: { color: '#10B981', fontSize: 14, fontWeight: '900' },
   submitRatingBtn: { width: '100%', backgroundColor: '#10B981', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginTop: 6 },
   submitRatingText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
+  pdfReceiptBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    paddingVertical: 12,
+    borderRadius: 14,
+    marginTop: 8,
+  },
+  pdfReceiptText: {
+    color: '#10B981',
+    fontSize: 13,
+    fontWeight: '800',
+  },
 
   // ==================== ADMIN SUITE STYLES ====================
   adminContainer: { gap: 14, paddingBottom: 24 },

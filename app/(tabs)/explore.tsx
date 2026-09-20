@@ -2,10 +2,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSwiftBoda } from '../../context/SwiftBodaContext';
+import { generateAndShareReceiptPDF } from '../../services/receiptPdfService';
 
 export default function ActivityScreen() {
   const router = useRouter();
@@ -20,6 +21,7 @@ export default function ActivityScreen() {
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<'PAST' | 'UPCOMING'>('PAST');
   const [selectedReceipt, setSelectedReceipt] = useState<any | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const handleRebook = (destName: string, destAddr: string, lat: number, lon: number) => {
     rebookDestination({
@@ -33,49 +35,34 @@ export default function ActivityScreen() {
 
   const handleDownloadReceipt = async (receipt: any) => {
     try {
-      const receiptText = `=========================================
-      SWIFTBODA TAXI & COURIER
-       OFFICIAL TRIP RECEIPT
-=========================================
-Receipt No:      SB-${receipt.id || '98124'}
-Date & Time:     ${new Date(receipt.createdAt || Date.now()).toLocaleString()}
-Status:          PAID & COMPLETED
------------------------------------------
-PASSENGER:       ${receipt.rider?.name || currentUser?.fullName || 'Valued Rider'}
-Phone:           ${receipt.rider?.phone || currentUser?.phoneNumber || '+254712345001'}
-
-DRIVER:          ${receipt.driver?.name || 'Kiprop Chemokil'}
-Vehicle:         ${receipt.driver?.vehicleModel || 'Bajaj Boxer 150X'} (${receipt.driver?.vehiclePlate || 'KMDK 234P'})
-Rating:          ★ ${receipt.rating || 5}.0
-
-ROUTE DETAILS:
-Pickup:          ${receipt.pickup?.address || 'Makutano Junction Stage'}
-Destination:     ${receipt.destination?.placeName || receipt.destination?.address || 'Kapenguria County Hospital'}
-Distance:        ${receipt.fare?.estimatedDistanceKm || 1.9} km
-Duration:        ${receipt.fare?.estimatedDurationMin || 6} mins
------------------------------------------
-ITEMIZED FARE BREAKDOWN:
-Base Fare:                 KES ${receipt.fare?.baseFare || 50}.00
-Distance Charge:           KES ${receipt.fare?.distanceFare || 30}.00
-Time Charge:               KES ${receipt.fare?.timeFare || 10}.00
-Booking Fee:               KES ${receipt.fare?.bookingFee || 0}.00
-${receipt.tipAmount ? `Driver Tip:                KES ${receipt.tipAmount}.00\n` : ''}TOTAL CHARGED:             KES ${receipt.fare?.totalFare || 90}.00
------------------------------------------
-PAYMENT SUMMARY:
-Payment Method:            Safaricom M-Pesa
-M-Pesa Trans Code:         QK89XP4021
-Transaction Status:        SUCCESSFUL
-=========================================
-Swift Boda Kenya Ltd.
-Thank you for riding with us safely!
-=========================================`;
-
-      await Share.share({
-        message: receiptText,
-        title: `SwiftBoda Official Receipt - ${receipt.id}`,
+      setIsExportingPdf(true);
+      await generateAndShareReceiptPDF({
+        id: receipt.id || '98124',
+        createdAt: receipt.createdAt || new Date().toISOString(),
+        completedAt: receipt.completedAt,
+        riderName: receipt.rider?.name || currentUser?.fullName || 'Valued Passenger',
+        riderPhone: receipt.rider?.phone || currentUser?.phoneNumber || '+254712345001',
+        driverName: receipt.driver?.name || 'Kiprop Chemokil',
+        driverPhone: receipt.driver?.phone || '+254722001122',
+        vehicleModel: receipt.driver?.vehicleModel || 'Bajaj Boxer 150X',
+        vehiclePlate: receipt.driver?.vehiclePlate || 'KMDK 234P',
+        category: receipt.category || 'STANDARD_BODA',
+        pickupAddress: receipt.pickup?.address || 'Makutano Junction Stage',
+        destinationAddress: receipt.destination?.placeName || receipt.destination?.address || 'Kapenguria County Hospital',
+        distanceKm: receipt.fare?.estimatedDistanceKm || 1.9,
+        durationMin: receipt.fare?.estimatedDurationMin || 6,
+        baseFare: receipt.fare?.baseFare || 50,
+        distanceFare: receipt.fare?.distanceFare || 30,
+        timeFare: receipt.fare?.timeFare || 10,
+        bookingFee: receipt.fare?.bookingFee || 0,
+        tipAmount: receipt.tipAmount || 0,
+        totalFare: (receipt.fare?.totalFare || 90) + (receipt.tipAmount || 0),
+        paymentMethod: receipt.paymentMethod || 'MPESA',
       });
     } catch (e) {
-      Alert.alert('Download Error', 'Could not export receipt.');
+      Alert.alert('Download Error', 'Could not generate PDF receipt.');
+    } finally {
+      setIsExportingPdf(false);
     }
   };
 
@@ -248,13 +235,21 @@ Thank you for riding with us safely!
                 </View>
               </View>
 
-              {/* Download / Share Official Receipt Button */}
+              {/* Download / Share Official PDF Receipt Button */}
               <TouchableOpacity
                 style={styles.downloadReceiptBtn}
                 onPress={() => handleDownloadReceipt(selectedReceipt)}
+                disabled={isExportingPdf}
+                activeOpacity={0.8}
               >
-                <Ionicons name="download-outline" size={18} color="#070A0F" />
-                <Text style={styles.downloadReceiptBtnText}>Download / Share Official Receipt</Text>
+                {isExportingPdf ? (
+                  <ActivityIndicator size="small" color="#070A0F" />
+                ) : (
+                  <>
+                    <Ionicons name="document-text" size={18} color="#070A0F" />
+                    <Text style={styles.downloadReceiptBtnText}>Export Official PDF Receipt</Text>
+                  </>
+                )}
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.closeReceiptBtn} onPress={() => setSelectedReceipt(null)}>
