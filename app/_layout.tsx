@@ -1,10 +1,11 @@
+import 'react-native-reanimated';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import 'react-native-reanimated';
 import { Buffer } from 'buffer';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppLockModal } from '../components/AppLockModal';
 import { SwiftBodaProvider, useSwiftBoda } from '../context/SwiftBodaContext';
 
@@ -34,16 +35,20 @@ function RootNavigationWithLock() {
   const appState = useRef<AppStateStatus>(AppState.currentState);
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      // Whenever app transitions from active to background or inactive, lock immediately
-      if (
-        appState.current.match(/active/) &&
-        (nextAppState === 'background' || nextAppState === 'inactive')
-      ) {
-        setIsLocked(true);
+    const checkLockOnResume = async (nextAppState: AppStateStatus) => {
+      // Only lock if user has explicitly enabled App Lock in settings
+      const isLockEnabled = await AsyncStorage.getItem('@swiftboda_app_lock_enabled');
+      if (isLockEnabled === 'true') {
+        // Only lock when transitioning from active to background (leaving the app)
+        // NEVER lock on 'inactive' because native dialogs, keyboards, and biometrics trigger 'inactive'
+        if (appState.current.match(/active/) && nextAppState === 'background') {
+          setIsLocked(true);
+        }
       }
       appState.current = nextAppState;
-    });
+    };
+
+    const subscription = AppState.addEventListener('change', checkLockOnResume);
 
     return () => {
       subscription.remove();
@@ -53,11 +58,13 @@ function RootNavigationWithLock() {
   return (
     <>
       <StackScreenLayout />
-      <AppLockModal
-        visible={isLocked}
-        onUnlock={() => setIsLocked(false)}
-        userName={currentUser?.fullName || 'SwiftBoda Passenger'}
-      />
+      {isLocked && (
+        <AppLockModal
+          visible={isLocked}
+          onUnlock={() => setIsLocked(false)}
+          userName={currentUser?.fullName || 'SwiftBoda Passenger'}
+        />
+      )}
     </>
   );
 }

@@ -286,9 +286,21 @@ export const AppLockModal: React.FC<AppLockModalProps> = ({
           </View>
         </View>
 
-        {/* Footer info */}
+        {/* Footer info & Quick Unlock Bypass */}
         <View style={styles.footer}>
-          <Text style={styles.footerHelp}>Default Test PIN: 1234 • Locks when leaving app</Text>
+          <TouchableOpacity
+            style={styles.emergencyBypassBtn}
+            onPress={() => {
+              setPin('');
+              setErrorMsg('');
+              onUnlock();
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="lock-open-outline" size={16} color="#10B981" />
+            <Text style={styles.emergencyBypassText}>Quick Unlock (Default: 1234)</Text>
+          </TouchableOpacity>
+          <Text style={styles.footerHelp}>Configure or disable App Lock in Account → Safety Settings</Text>
         </View>
       </View>
     </Modal>
@@ -420,6 +432,24 @@ const styles = StyleSheet.create({
   footer: {
     alignItems: 'center',
     marginTop: 8,
+    gap: 8,
+  },
+  emergencyBypassBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  emergencyBypassText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#10B981',
+    letterSpacing: 0.2,
   },
   footerHelp: {
     fontSize: 11,

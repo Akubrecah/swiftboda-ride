@@ -12,10 +12,10 @@ let UrlTile: any = null;
 if (Platform.OS !== 'web') {
   try {
     const Maps = require('react-native-maps');
-    MapView = Maps.default;
-    Marker = Maps.Marker;
-    Polyline = Maps.Polyline;
-    UrlTile = Maps.UrlTile;
+    MapView = Maps.default || Maps;
+    Marker = Maps.Marker || (Maps.default && Maps.default.Marker);
+    Polyline = Maps.Polyline || (Maps.default && Maps.default.Polyline);
+    UrlTile = Maps.UrlTile || (Maps.default && Maps.default.UrlTile);
   } catch (e) {
     console.warn('react-native-maps could not be loaded, using fallback vector map.');
   }
@@ -87,20 +87,45 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
     }
   }, [destinationLocation, simulatedDriverPos]);
 
+  const [currentRegion, setCurrentRegion] = React.useState({
+    latitude: userLocation.latitude,
+    longitude: userLocation.longitude,
+    latitudeDelta: 0.035,
+    longitudeDelta: 0.035,
+  });
+
   const handleRecenter = () => {
     if (mapRef.current && userLocation) {
       try {
-        mapRef.current.animateToRegion(
-          {
-            latitude: userLocation.latitude,
-            longitude: userLocation.longitude,
-            latitudeDelta: 0.035,
-            longitudeDelta: 0.035,
-          },
-          800
-        );
+        const targetRegion = {
+          latitude: userLocation.latitude,
+          longitude: userLocation.longitude,
+          latitudeDelta: 0.035,
+          longitudeDelta: 0.035,
+        };
+        setCurrentRegion(targetRegion);
+        mapRef.current.animateToRegion(targetRegion, 800);
       } catch (e) {
         // Safe fallback
+      }
+    }
+  };
+
+  const handleZoom = (direction: 'in' | 'out') => {
+    if (mapRef.current) {
+      try {
+        const factor = direction === 'in' ? 0.5 : 2;
+        const newLatDelta = Math.max(0.002, Math.min(1.5, currentRegion.latitudeDelta * factor));
+        const newLngDelta = Math.max(0.002, Math.min(1.5, currentRegion.longitudeDelta * factor));
+        const nextRegion = {
+          ...currentRegion,
+          latitudeDelta: newLatDelta,
+          longitudeDelta: newLngDelta,
+        };
+        setCurrentRegion(nextRegion);
+        mapRef.current.animateToRegion(nextRegion, 300);
+      } catch (e) {
+        // Fallback
       }
     }
   };
@@ -166,31 +191,37 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
             latitudeDelta: 0.035,
             longitudeDelta: 0.035,
           }}
+          mapType="none"
           customMapStyle={mapLayer === 'OSM_DARK' ? UBER_DARK_MAP_STYLE : []}
           showsUserLocation={false}
           showsCompass={false}
-          showsTraffic={true}
+          showsTraffic={false}
           rotateEnabled={true}
           pitchEnabled={true}
           scrollEnabled={true}
           zoomEnabled={true}
+          onRegionChangeComplete={(r: any) => setCurrentRegion(r)}
           onError={(e: any) => {
             console.warn('Native MapView error, switching to Vector Radar:', e);
             setMapLayer('VECTOR_RADAR');
           }}
         >
-          {/* Free Open-Source Map Tile Layer (CartoDB Dark or Standard OpenStreetMap) */}
+          {/* Free Open-Source Map Tile Layer (CartoDB Dark or Standard OpenStreetMap Voyager) */}
           {UrlTile && mapLayer === 'OSM_DARK' && (
             <UrlTile
               urlTemplate="https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
               maximumZ={19}
+              tileSize={256}
+              flipY={false}
               zIndex={-1}
             />
           )}
           {UrlTile && mapLayer === 'OSM_STANDARD' && (
             <UrlTile
-              urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+              urlTemplate="https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
               maximumZ={19}
+              tileSize={256}
+              flipY={false}
               zIndex={-1}
             />
           )}
@@ -391,6 +422,14 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
             color="#10B981"
           />
         </TouchableOpacity>
+
+        <TouchableOpacity style={styles.zoomInBtn} onPress={() => handleZoom('in')} activeOpacity={0.8}>
+          <Ionicons name="add" size={18} color="#F8FAFC" />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.zoomOutBtn} onPress={() => handleZoom('out')} activeOpacity={0.8}>
+          <Ionicons name="remove" size={18} color="#F8FAFC" />
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -516,6 +555,36 @@ const styles = StyleSheet.create({
   mapToggleBtn: {
     position: 'absolute',
     top: 58,
+    right: 16,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#0E141F',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    elevation: 10,
+    zIndex: 10,
+  },
+  zoomInBtn: {
+    position: 'absolute',
+    top: 102,
+    right: 16,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#0E141F',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    elevation: 10,
+    zIndex: 10,
+  },
+  zoomOutBtn: {
+    position: 'absolute',
+    top: 146,
     right: 16,
     width: 38,
     height: 38,

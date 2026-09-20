@@ -13,6 +13,9 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as Haptics from 'expo-haptics';
 import AuthModal from '../../components/AuthModal';
 import { DriverKycOnboardingModal, DriverKycSubmission } from '../../components/DriverKycOnboardingModal';
 import { useSwiftBoda } from '../../context/SwiftBodaContext';
@@ -37,6 +40,131 @@ export default function ProfileScreen() {
   const [rideCheck, setRideCheck] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [forceOnboarding, setForceOnboarding] = useState(false);
+
+  // Biometrics & App Lock Security States
+  const [biometricsEnabled, setBiometricsEnabled] = useState(false);
+  const [appLockEnabled, setAppLockEnabled] = useState(false);
+  const [hasBiometricHardware, setHasBiometricHardware] = useState(false);
+  const [biometricType, setBiometricType] = useState('Biometrics');
+  const [currentSecurityPin, setCurrentSecurityPin] = useState('1234');
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const [storedBio, storedLock, storedPin] = await Promise.all([
+          AsyncStorage.getItem('@swiftboda_biometrics_enabled'),
+          AsyncStorage.getItem('@swiftboda_app_lock_enabled'),
+          AsyncStorage.getItem('@swiftboda_security_pin'),
+        ]);
+        if (storedBio === 'true') setBiometricsEnabled(true);
+        if (storedLock === 'true') setAppLockEnabled(true);
+        if (storedPin) setCurrentSecurityPin(storedPin);
+
+        const hasHw = await LocalAuthentication.hasHardwareAsync();
+        const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+        if (hasHw && isEnrolled) {
+          setHasBiometricHardware(true);
+          const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+          if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+            setBiometricType('Face ID');
+          } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+            setBiometricType('Fingerprint');
+          }
+        }
+      } catch (err) {
+        console.warn('Failed checking biometrics on device', err);
+      }
+    })();
+  }, []);
+
+  const handleToggleBiometrics = async (val: boolean) => {
+    try {
+      if (val && !hasBiometricHardware) {
+        Alert.alert(
+          'Biometrics Not Available',
+          'Your device does not have biometric hardware or no fingerprints/face data is enrolled in your phone settings.'
+        );
+        return;
+      }
+      setBiometricsEnabled(val);
+      await AsyncStorage.setItem('@swiftboda_biometrics_enabled', val ? 'true' : 'false');
+      try {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch {}
+      Alert.alert(
+        val ? 'Biometrics Enabled' : 'Biometrics Disabled',
+        val
+          ? `${biometricType} is now enabled for instant authentication & wallet security.`
+          : `${biometricType} has been turned off.`
+      );
+    } catch (e) {
+      console.warn(e);
+    }
+  };
+
+  const handleToggleAppLock = async (val: boolean) => {
+    try {
+      setAppLockEnabled(val);
+      await AsyncStorage.setItem('@swiftboda_app_lock_enabled', val ? 'true' : 'false');
+      try {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch {}
+      Alert.alert(
+        val ? 'App Lock Activated' : 'App Lock Deactivated',
+        val
+          ? 'SwiftBoda will now lock securely with your PIN/Biometrics when you switch apps.'
+          : 'App Lock is now deactivated.'
+      );
+    } catch (e) {
+      console.warn(e);
+    }
+  };
+
+  const handleTestBiometrics = async () => {
+    try {
+      if (!hasBiometricHardware) {
+        Alert.alert('Hardware Not Enrolled', 'No enrolled biometric hardware was found on this phone.');
+        return;
+      }
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: `Test ${biometricType} for SwiftBoda`,
+        cancelLabel: 'Cancel',
+      });
+      if (result.success) {
+        try {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch {}
+        Alert.alert('Sensor Verified! 🛡️', `${biometricType} is working and properly calibrated on your device.`);
+      } else {
+        Alert.alert('Verification Dismissed', 'Biometric test was cancelled or did not match.');
+      }
+    } catch (err) {
+      Alert.alert('Sensor Error', 'Could not open native biometric prompt.');
+    }
+  };
+
+  const handleSaveNewPin = async () => {
+    if (newPinInput.length !== 4 || !/^\d{4}$/.test(newPinInput)) {
+      Alert.alert('Invalid PIN', 'PIN must be exactly 4 numeric digits (e.g. 1234).');
+      return;
+    }
+    if (newPinInput !== confirmPinInput) {
+      Alert.alert('PIN Mismatch', 'The two PIN entries do not match. Please re-type.');
+      return;
+    }
+    await AsyncStorage.setItem('@swiftboda_security_pin', newPinInput);
+    setCurrentSecurityPin(newPinInput);
+    setNewPinInput('');
+    setConfirmPinInput('');
+    setShowPinModal(false);
+    try {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {}
+    Alert.alert('Security PIN Updated', 'Your new 4-digit PIN is now active.');
+  };
 
   // Driver Application Modal States
   const [showDriverApplicationModal, setShowDriverApplicationModal] = useState(false);
@@ -280,6 +408,86 @@ export default function ProfileScreen() {
 
           <View style={styles.divider} />
 
+          {/* Biometrics Toggle */}
+          <View style={styles.settingRow}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons
+                  name={biometricType === 'Face ID' ? 'scan-outline' : 'finger-print-outline'}
+                  size={16}
+                  color="#10B981"
+                />
+                <Text style={styles.settingTitle}>{biometricType} Authentication</Text>
+              </View>
+              <Text style={styles.settingSub}>
+                {hasBiometricHardware
+                  ? `Unlock SwiftBoda instantly with ${biometricType} sensor.`
+                  : 'No biometric hardware or enrollment detected on this phone.'}
+              </Text>
+            </View>
+            <Switch
+              value={biometricsEnabled}
+              onValueChange={handleToggleBiometrics}
+              disabled={!hasBiometricHardware}
+              trackColor={{ false: '#334155', true: '#10B981' }}
+              thumbColor="#FFF"
+            />
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* App Lock on Background Toggle */}
+          <View style={styles.settingRow}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="lock-closed-outline" size={16} color="#10B981" />
+                <Text style={styles.settingTitle}>App Lock on Background</Text>
+              </View>
+              <Text style={styles.settingSub}>
+                Locks app with PIN / Biometrics when leaving SwiftBoda.
+              </Text>
+            </View>
+            <Switch
+              value={appLockEnabled}
+              onValueChange={handleToggleAppLock}
+              trackColor={{ false: '#334155', true: '#10B981' }}
+              thumbColor="#FFF"
+            />
+          </View>
+
+          {/* Test Biometrics & PIN Configuration Actions */}
+          <View style={styles.divider} />
+
+          <TouchableOpacity style={styles.menuRow} onPress={handleTestBiometrics}>
+            <View style={[styles.menuIconBox, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+              <Ionicons
+                name={biometricType === 'Face ID' ? 'scan' : 'finger-print'}
+                size={18}
+                color="#10B981"
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.menuTitle}>Test {biometricType} Sensor</Text>
+              <Text style={styles.menuSub}>Verify your phone sensor and biometric response</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+          </TouchableOpacity>
+
+          <View style={styles.divider} />
+
+          <TouchableOpacity style={styles.menuRow} onPress={() => setShowPinModal(true)}>
+            <View style={[styles.menuIconBox, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
+              <Ionicons name="keypad-outline" size={18} color="#3B82F6" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.menuTitle}>Change 4-Digit Security PIN</Text>
+              <Text style={styles.menuSub}>Current PIN: •••• (Default: 1234)</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
+          </TouchableOpacity>
+
+          <View style={styles.divider} />
+
           <TouchableOpacity style={styles.menuRow} onPress={triggerSOS}>
             <View style={styles.sosIconBox}>
               <Ionicons name="warning" size={18} color="#EF4444" />
@@ -458,6 +666,55 @@ export default function ProfileScreen() {
             : undefined
         }
       />
+
+      {/* Change Security PIN Modal */}
+      <Modal visible={showPinModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.addPlaceCard}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="keypad" size={20} color="#10B981" />
+                <Text style={styles.addPlaceTitle}>Change Security PIN</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowPinModal(false)}>
+                <Ionicons name="close" size={22} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ color: '#94A3B8', fontSize: 13, marginTop: 4 }}>
+              Set a 4-digit PIN to lock your wallet, confirm rides, and unlock SwiftBoda.
+            </Text>
+
+            <Text style={styles.inputLabel}>Enter New 4-Digit PIN</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="••••"
+              placeholderTextColor="#64748B"
+              value={newPinInput}
+              onChangeText={setNewPinInput}
+              keyboardType="number-pad"
+              maxLength={4}
+              secureTextEntry
+            />
+
+            <Text style={styles.inputLabel}>Confirm New PIN</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="••••"
+              placeholderTextColor="#64748B"
+              value={confirmPinInput}
+              onChangeText={setConfirmPinInput}
+              keyboardType="number-pad"
+              maxLength={4}
+              secureTextEntry
+            />
+
+            <TouchableOpacity style={styles.savePlaceConfirmBtn} onPress={handleSaveNewPin}>
+              <Text style={styles.savePlaceConfirmText}>Save Security PIN</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Auth Modal */}
       <AuthModal

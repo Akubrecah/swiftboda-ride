@@ -97,6 +97,7 @@ export default function HomeScreen() {
 
   // Search & Modal States
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [hasDismissedAuth, setHasDismissedAuth] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showChatModal, setShowChatModal] = useState(false);
@@ -1660,8 +1661,11 @@ export default function HomeScreen() {
 
       {/* 8. AUTHENTICATION & ONBOARDING MODAL */}
       <AuthModal
-        visible={showAuthModal || !isAuthenticated}
-        onClose={() => setShowAuthModal(false)}
+        visible={showAuthModal || (!isAuthenticated && !hasDismissedAuth)}
+        onClose={() => {
+          setShowAuthModal(false);
+          setHasDismissedAuth(true);
+        }}
       />
 
       {/* 9. RIDER SELECTOR MODAL (WHO IS RIDING?) */}
