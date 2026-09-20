@@ -12,14 +12,20 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.swiftboda.app",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSySwiftBoda_DevPlaceholder_Key_For_Map_Rendering"
+        }
+      }
     },
     "web": {
       "output": "static",
