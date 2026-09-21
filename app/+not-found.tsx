@@ -15,7 +15,7 @@ export default function NotFoundScreen() {
         <Text style={styles.description}>
           This screen isn&apos;t available in Swift Boda. Let&apos;s get you back to booking your ride.
         </Text>
-        <Link href="/(tabs)" style={styles.link}>
+        <Link href="/" style={styles.link}>
           <View style={styles.btn}>
             <Ionicons name="bicycle" size={18} color="#FFF" />
             <Text style={styles.btnText}>Back to Swift Boda Home</Text>

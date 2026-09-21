@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,16 +13,30 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import { useSwiftBoda } from '../../context/SwiftBodaContext';
+import { useTheme } from '../../context/ThemeContext';
 import { generateAndShareReceiptPDF } from '../../services/receiptPdfService';
 
 export default function ActivityScreen() {
   const router = useRouter();
   const { pastTrips, currentUser, rebookDestination } = useSwiftBoda();
+  const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<'PAST' | 'UPCOMING'>('PAST');
   const [selectedReceipt, setSelectedReceipt] = useState<any | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    setTimeout(() => {
+      setRefreshing(false);
+    }, 600);
+  }, []);
 
   const handleRebook = (destName: string, destAddr: string, lat: number, lon: number) => {
     rebookDestination({
@@ -30,7 +45,7 @@ export default function ActivityScreen() {
       placeName: destName,
       address: destAddr,
     });
-    router.push('/(tabs)');
+    router.push('/');
   };
 
   const handleDownloadReceipt = async (receipt: any) => {
@@ -67,29 +82,37 @@ export default function ActivityScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Header */}
-      <View style={[styles.header, { paddingTop: Math.max(insets.top + 8, 20) }]}>
-        <Text style={styles.headerTitle}>Activity</Text>
-        <Text style={styles.headerSub}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top + 8, 20), backgroundColor: theme.headerBg, borderColor: theme.border }]}>
+        <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Activity</Text>
+        <Text style={[styles.headerSub, { color: theme.textSecondary }]}>
           {currentUser?.role === 'DRIVER' ? 'Your completed driver trips & payouts' : 'Past rides, receipts and rebooking'}
         </Text>
 
-        {/* Uber Segmented Tabs */}
-        <View style={styles.segmentedRow}>
+        {/* Segmented Tabs */}
+        <View style={[styles.segmentedRow, { backgroundColor: theme.surfaceElevated }]}>
           <TouchableOpacity
-            style={[styles.segmentBtn, activeTab === 'PAST' && styles.segmentBtnActive]}
+            style={[
+              styles.segmentBtn,
+              activeTab === 'PAST' && { backgroundColor: theme.cardBg, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 3 },
+            ]}
             onPress={() => setActiveTab('PAST')}
           >
-            <Text style={[styles.segmentText, activeTab === 'PAST' && styles.segmentTextActive]}>
+            <Text style={[styles.segmentText, { color: activeTab === 'PAST' ? theme.textPrimary : theme.textMuted }]}>
               Past ({pastTrips.length})
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.segmentBtn, activeTab === 'UPCOMING' && styles.segmentBtnActive]}
+            style={[
+              styles.segmentBtn,
+              activeTab === 'UPCOMING' && { backgroundColor: theme.cardBg, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 3 },
+            ]}
             onPress={() => setActiveTab('UPCOMING')}
           >
-            <Text style={[styles.segmentText, activeTab === 'UPCOMING' && styles.segmentTextActive]}>Upcoming</Text>
+            <Text style={[styles.segmentText, { color: activeTab === 'UPCOMING' ? theme.textPrimary : theme.textMuted }]}>
+              Upcoming
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -98,54 +121,70 @@ export default function ActivityScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
       >
         {activeTab === 'UPCOMING' ? (
           <View style={styles.emptyUpcomingBox}>
-            <Ionicons name="calendar-outline" size={48} color="#64748B" />
-            <Text style={styles.emptyUpcomingTitle}>No upcoming trips</Text>
-            <Text style={styles.emptyUpcomingSub}>Reserve a ride up to 30 days in advance</Text>
+            <Ionicons name="calendar-outline" size={48} color={theme.textMuted} />
+            <Text style={[styles.emptyUpcomingTitle, { color: theme.textPrimary }]}>No upcoming trips</Text>
+            <Text style={[styles.emptyUpcomingSub, { color: theme.textSecondary }]}>Reserve a ride up to 30 days in advance</Text>
           </View>
         ) : pastTrips.length === 0 ? (
           <View style={styles.emptyUpcomingBox}>
-            <Ionicons name="receipt-outline" size={48} color="#64748B" />
-            <Text style={styles.emptyUpcomingTitle}>No past trips found</Text>
-            <Text style={styles.emptyUpcomingSub}>Your ride history will appear here after your first trip.</Text>
+            <Ionicons name="receipt-outline" size={48} color={theme.textMuted} />
+            <Text style={[styles.emptyUpcomingTitle, { color: theme.textPrimary }]}>No past trips found</Text>
+            <Text style={[styles.emptyUpcomingSub, { color: theme.textSecondary }]}>Your ride history will appear here after your first trip.</Text>
           </View>
         ) : (
           <View style={{ gap: 14 }}>
             {pastTrips.map((item) => (
-              <View key={item.id} style={styles.activityCard}>
+              <View
+                key={item.id}
+                style={[
+                  styles.activityCard,
+                  { backgroundColor: theme.cardBg, borderColor: theme.cardBorder },
+                ]}
+              >
                 <View style={styles.cardHeader}>
-                  <View style={styles.categoryIconCircle}>
+                  <View style={[styles.categoryIconCircle, { backgroundColor: theme.badgeBg }]}>
                     <Ionicons
                       name={item.category === 'EXPRESS_DELIVERY' ? 'paper-plane' : 'bicycle'}
                       size={20}
-                      color="#10B981"
+                      color={theme.primary}
                     />
                   </View>
                   <View style={styles.headerInfo}>
-                    <Text style={styles.destinationTitle} numberOfLines={1}>
+                    <Text style={[styles.destinationTitle, { color: theme.textPrimary }]} numberOfLines={1}>
                       {item.destination.placeName || item.destination.address}
                     </Text>
-                    <Text style={styles.tripDate}>
+                    <Text style={[styles.tripDate, { color: theme.textMuted }]}>
                       {new Date(item.createdAt).toLocaleDateString()} • {new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </Text>
                   </View>
-                  <Text style={styles.fareAmount}>KES {item.fare.totalFare.toFixed(0)}</Text>
+                  <Text style={[styles.fareAmount, { color: theme.textPrimary }]}>
+                    KES {item.fare.totalFare.toFixed(0)}
+                  </Text>
                 </View>
 
-                <View style={styles.cardDivider} />
+                <View style={[styles.cardDivider, { backgroundColor: theme.border }]} />
 
                 <View style={styles.routeBox}>
                   <View style={styles.routeRow}>
-                    <View style={[styles.dot, { backgroundColor: '#10B981' }]} />
-                    <Text style={styles.routeText} numberOfLines={1}>
+                    <View style={[styles.dot, { backgroundColor: theme.primary }]} />
+                    <Text style={[styles.routeText, { color: theme.textSecondary }]} numberOfLines={1}>
                       From: {item.pickup.address}
                     </Text>
                   </View>
                   <View style={styles.routeRow}>
-                    <View style={[styles.dot, { backgroundColor: '#F59E0B' }]} />
-                    <Text style={styles.routeText} numberOfLines={1}>
+                    <View style={[styles.dot, { backgroundColor: theme.warning }]} />
+                    <Text style={[styles.routeText, { color: theme.textSecondary }]} numberOfLines={1}>
                       To: {item.destination.address}
                     </Text>
                   </View>
@@ -154,7 +193,10 @@ export default function ActivityScreen() {
                 <View style={styles.actionsRow}>
                   {currentUser?.role === 'RIDER' && (
                     <TouchableOpacity
-                      style={styles.rebookBtn}
+                      style={[
+                        styles.rebookBtn,
+                        { backgroundColor: theme.badgeBg, borderColor: theme.badgeBorder },
+                      ]}
                       onPress={() =>
                         handleRebook(
                           item.destination.placeName || 'Destination',
@@ -164,17 +206,20 @@ export default function ActivityScreen() {
                         )
                       }
                     >
-                      <Ionicons name="repeat" size={14} color="#10B981" />
-                      <Text style={styles.rebookText}>Rebook</Text>
+                      <Ionicons name="repeat" size={14} color={theme.primary} />
+                      <Text style={[styles.rebookText, { color: theme.primary }]}>Rebook</Text>
                     </TouchableOpacity>
                   )}
 
                   <TouchableOpacity
-                    style={styles.viewReceiptBtn}
+                    style={[
+                      styles.viewReceiptBtn,
+                      { backgroundColor: theme.surfaceElevated },
+                    ]}
                     onPress={() => setSelectedReceipt(item)}
                   >
-                    <Ionicons name="receipt" size={14} color="#F8FAFC" style={{ marginRight: 4 }} />
-                    <Text style={styles.viewReceiptText}>Receipt</Text>
+                    <Ionicons name="receipt" size={14} color={theme.textPrimary} style={{ marginRight: 4 }} />
+                    <Text style={[styles.viewReceiptText, { color: theme.textPrimary }]}>Receipt</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -187,73 +232,73 @@ export default function ActivityScreen() {
       {selectedReceipt && (
         <Modal visible transparent animationType="fade">
           <View style={styles.modalOverlay}>
-            <View style={styles.receiptModalCard}>
+            <View style={[styles.receiptModalCard, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
               <View style={styles.receiptModalTop}>
                 <View>
-                  <Text style={styles.receiptModalTitle}>Official Trip Receipt</Text>
-                  <Text style={styles.receiptModalSub}>SB-{selectedReceipt.id}</Text>
+                  <Text style={[styles.receiptModalTitle, { color: theme.textPrimary }]}>Official Trip Receipt</Text>
+                  <Text style={[styles.receiptModalSub, { color: theme.textSecondary }]}>SB-{selectedReceipt.id}</Text>
                 </View>
                 <TouchableOpacity onPress={() => setSelectedReceipt(null)}>
-                  <Ionicons name="close" size={22} color="#94A3B8" />
+                  <Ionicons name="close" size={22} color={theme.textMuted} />
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.receiptItemsList}>
+              <View style={[styles.receiptItemsList, { backgroundColor: theme.surfaceElevated }]}>
                 <View style={styles.receiptLine}>
-                  <Text style={styles.receiptItemName}>Base Fare</Text>
-                  <Text style={styles.receiptItemVal}>KES {selectedReceipt.fare?.baseFare || 70}.00</Text>
+                  <Text style={[styles.receiptItemName, { color: theme.textSecondary }]}>Base Fare</Text>
+                  <Text style={[styles.receiptItemVal, { color: theme.textPrimary }]}>KES {selectedReceipt.fare?.baseFare || 70}.00</Text>
                 </View>
                 <View style={styles.receiptLine}>
-                  <Text style={styles.receiptItemName}>Distance Charge</Text>
-                  <Text style={styles.receiptItemVal}>KES {selectedReceipt.fare?.distanceFare || 80}.00</Text>
+                  <Text style={[styles.receiptItemName, { color: theme.textSecondary }]}>Distance Charge</Text>
+                  <Text style={[styles.receiptItemVal, { color: theme.textPrimary }]}>KES {selectedReceipt.fare?.distanceFare || 80}.00</Text>
                 </View>
                 <View style={styles.receiptLine}>
-                  <Text style={styles.receiptItemName}>Time Charge</Text>
-                  <Text style={styles.receiptItemVal}>KES {selectedReceipt.fare?.timeFare || 20}.00</Text>
+                  <Text style={[styles.receiptItemName, { color: theme.textSecondary }]}>Time Charge</Text>
+                  <Text style={[styles.receiptItemVal, { color: theme.textPrimary }]}>KES {selectedReceipt.fare?.timeFare || 20}.00</Text>
                 </View>
                 <View style={styles.receiptLine}>
-                  <Text style={styles.receiptItemName}>Booking Fee</Text>
-                  <Text style={styles.receiptItemVal}>KES {selectedReceipt.fare?.bookingFee || 20}.00</Text>
+                  <Text style={[styles.receiptItemName, { color: theme.textSecondary }]}>Booking Fee</Text>
+                  <Text style={[styles.receiptItemVal, { color: theme.textPrimary }]}>KES {selectedReceipt.fare?.bookingFee || 20}.00</Text>
                 </View>
                 {selectedReceipt.tipAmount > 0 && (
                   <View style={styles.receiptLine}>
-                    <Text style={styles.receiptItemName}>Driver Tip</Text>
-                    <Text style={styles.receiptItemVal}>+KES {selectedReceipt.tipAmount}.00</Text>
+                    <Text style={[styles.receiptItemName, { color: theme.textSecondary }]}>Driver Tip</Text>
+                    <Text style={[styles.receiptItemVal, { color: theme.primary }]}>+KES {selectedReceipt.tipAmount}.00</Text>
                   </View>
                 )}
-                <View style={[styles.receiptLine, styles.receiptTotalLine]}>
-                  <Text style={styles.receiptTotalLabel}>Total Paid</Text>
-                  <Text style={styles.receiptTotalValue}>KES {selectedReceipt.fare?.totalFare || 190}.00</Text>
+                <View style={[styles.receiptLine, styles.receiptTotalLine, { borderColor: theme.border }]}>
+                  <Text style={[styles.receiptTotalLabel, { color: theme.textPrimary }]}>Total Paid</Text>
+                  <Text style={[styles.receiptTotalValue, { color: theme.primary }]}>KES {selectedReceipt.fare?.totalFare || 190}.00</Text>
                 </View>
               </View>
 
-              <View style={styles.paymentMethodNotice}>
-                <Ionicons name="phone-portrait" size={16} color="#10B981" />
+              <View style={[styles.paymentMethodNotice, { backgroundColor: theme.badgeBg }]}>
+                <Ionicons name="phone-portrait" size={16} color={theme.primary} />
                 <View>
-                  <Text style={styles.paymentMethodNoticeText}>Paid via Safaricom M-Pesa</Text>
-                  <Text style={styles.paymentRefText}>Ref Code: QK89XP4021 • Verified</Text>
+                  <Text style={[styles.paymentMethodNoticeText, { color: theme.primary }]}>Paid via Safaricom M-Pesa</Text>
+                  <Text style={[styles.paymentRefText, { color: theme.textMuted }]}>Ref Code: QK89XP4021 • Verified</Text>
                 </View>
               </View>
 
               {/* Download / Share Official PDF Receipt Button */}
               <TouchableOpacity
-                style={styles.downloadReceiptBtn}
+                style={[styles.downloadReceiptBtn, { backgroundColor: theme.primary }]}
                 onPress={() => handleDownloadReceipt(selectedReceipt)}
                 disabled={isExportingPdf}
                 activeOpacity={0.8}
               >
                 {isExportingPdf ? (
-                  <ActivityIndicator size="small" color="#070A0F" />
+                  <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
                   <>
-                    <Ionicons name="document-text" size={18} color="#070A0F" />
-                    <Text style={styles.downloadReceiptBtnText}>Export Official PDF Receipt</Text>
+                    <Ionicons name="document-text" size={18} color="#FFFFFF" />
+                    <Text style={[styles.downloadReceiptBtnText, { color: '#FFFFFF' }]}>Export Official PDF Receipt</Text>
                   </>
                 )}
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.closeReceiptBtn} onPress={() => setSelectedReceipt(null)}>
-                <Text style={styles.closeReceiptBtnText}>Close</Text>
+                <Text style={[styles.closeReceiptBtnText, { color: theme.textMuted }]}>Close</Text>
               </TouchableOpacity>
             </View>
           </View>

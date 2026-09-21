@@ -1,6 +1,6 @@
 import { GeoLocation } from '../../shared/types';
 import { calculateHaversineDistance, generateRouteWaypoints } from '../../shared/utils/geo';
-import { config } from '../config';
+
 
 export interface RouteResult {
   distanceKm: number;
@@ -68,16 +68,89 @@ export class OSRMMapsProvider implements MapsProvider {
   }
 }
 
+import { serplyMapsClient, SerplyMapsClient } from './serply/client';
+import { NormalizedPlace, SerplySearchOptions } from './serply/types';
+
+export * from './serply/types';
+export * from './serply/client';
+
+export class SerplyMapsProvider implements MapsProvider {
+  private client: SerplyMapsClient;
+  private osrmFallback: OSRMMapsProvider;
+
+  constructor(client: SerplyMapsClient = serplyMapsClient) {
+    this.client = client;
+    this.osrmFallback = new OSRMMapsProvider();
+  }
+
+  public async calculateRoute(origin: GeoLocation, destination: GeoLocation): Promise<RouteResult> {
+    return this.osrmFallback.calculateRoute(origin, destination);
+  }
+
+  public async reverseGeocode(lat: number, lon: number): Promise<GeocodeResult> {
+    return this.osrmFallback.reverseGeocode(lat, lon);
+  }
+
+  /**
+   * Search real places via live Serply Google Maps API
+   */
+  public async searchPlaces(query: string, options?: Partial<SerplySearchOptions>): Promise<GeocodeResult[]> {
+    const response = await this.client.searchPlaces({
+      query,
+      num: options?.num,
+      hl: options?.hl,
+      gl: options?.gl,
+    });
+
+    return response.places.map((place) => ({
+      placeName: place.name,
+      address: place.address || place.district || 'Address not specified',
+      latitude: place.latitude,
+      longitude: place.longitude,
+    }));
+  }
+
+  /**
+   * Return full normalized place records from Serply
+   */
+  public async searchDetailedPlaces(query: string, options?: Partial<SerplySearchOptions>): Promise<NormalizedPlace[]> {
+    const response = await this.client.searchPlaces({
+      query,
+      num: options?.num,
+      hl: options?.hl,
+      gl: options?.gl,
+    });
+
+    return response.places;
+  }
+}
+
 export class MapsService {
   private provider: MapsProvider;
+  public serplyClient: SerplyMapsClient;
 
   constructor() {
-    this.provider = new OSRMMapsProvider();
+    this.serplyClient = serplyMapsClient;
+    const provider = typeof process !== 'undefined' && process.env ? process.env.MAPS_PROVIDER : 'SERPLY';
+    if (provider === 'SERPLY' || !provider) {
+      this.provider = new SerplyMapsProvider(this.serplyClient);
+    } else {
+      this.provider = new OSRMMapsProvider();
+    }
   }
 
   public getProvider(): MapsProvider {
     return this.provider;
   }
+
+  public async searchPlaces(query: string, options?: Partial<SerplySearchOptions>): Promise<NormalizedPlace[]> {
+    if (this.provider instanceof SerplyMapsProvider) {
+      return this.provider.searchDetailedPlaces(query, options);
+    }
+    const response = await this.serplyClient.searchPlaces({ query, ...options });
+    return response.places;
+  }
 }
 
 export const mapsService = new MapsService();
+

@@ -228,11 +228,11 @@ class DatabaseService {
    */
   private seedInitialProductionData() {
     // 1. Seed Verified System Admin
-    const adminId = 'usr-admin-01';
+    const adminId = 'user-admin-sarah';
     this.users.set(adminId, {
       id: adminId,
-      full_name: 'Swift Operations Admin',
-      email: 'ops@swiftboda.co.ke',
+      full_name: 'Sarah Kemunto (Ops)',
+      email: 'ops.westpokot@swiftboda.co.ke',
       phone_number: '+254700000001',
       password_hash: '$2a$10$wN31rO4Z0t7mY2rQ3l1nwez5gJ5yF7VqL9K0xR2P4s8u1w3x5y7z9', // Argon2/bcrypt hash
       role: 'ADMIN',
@@ -241,13 +241,14 @@ class DatabaseService {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    this.users.set('usr-admin-01', this.users.get(adminId)!);
 
-    // 2. Seed Verified Rider with Active Wallet
-    const riderId = 'usr-rider-01';
+    // 2. Seed Verified Rider with Active Wallet (West Pokot & Nairobi)
+    const riderId = 'user-rider-grace';
     this.users.set(riderId, {
       id: riderId,
-      full_name: 'Grace Wanjiku',
-      email: 'grace.wanjiku@swiftboda.co.ke',
+      full_name: 'Grace Chemutai',
+      email: 'grace.chemutai@swiftboda.co.ke',
       phone_number: '+254712345001',
       password_hash: '$2a$10$wN31rO4Z0t7mY2rQ3l1nwez5gJ5yF7VqL9K0xR2P4s8u1w3x5y7z9',
       role: 'RIDER',
@@ -256,6 +257,7 @@ class DatabaseService {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    this.users.set('usr-rider-01', this.users.get(riderId)!);
 
     const riderWalletId = uuidv4();
     this.wallets.set(riderWalletId, {
@@ -267,7 +269,60 @@ class DatabaseService {
       updated_at: new Date().toISOString(),
     });
 
-    // 3. Seed 5 Real Verified Nairobi Boda Drivers with Approved Vehicles
+    // 2.5 Seed Verified West Pokot Driver (Kiprop Chemokil)
+    const wpDriverUserId = 'user-driver-kipchoge';
+    const wpDriverId = 'drv-wp-1';
+    this.users.set(wpDriverUserId, {
+      id: wpDriverUserId,
+      full_name: 'Kiprop Chemokil',
+      email: 'kiprop.chemokil@swiftboda.co.ke',
+      phone_number: '+254712345678',
+      password_hash: '$2a$10$wN31rO4Z0t7mY2rQ3l1nwez5gJ5yF7VqL9K0xR2P4s8u1w3x5y7z9',
+      role: 'DRIVER',
+      status: 'ACTIVE',
+      rating: 4.95,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    this.drivers.set(wpDriverId, {
+      id: wpDriverId,
+      user_id: wpDriverUserId,
+      license_number: 'DL-KE-KMDK234P',
+      is_verified: true,
+      status: 'ONLINE',
+      acceptance_rate: 99.0,
+      cancellation_rate: 0.8,
+      total_earnings: 34500.0,
+      driver_level: 'PLATINUM',
+      current_latitude: 1.2405, // Makutano, West Pokot
+      current_longitude: 35.1135,
+      current_heading: 45,
+      current_speed: 18.0,
+      last_heartbeat: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    // Also map by user ID for instant lookup
+    this.drivers.set(wpDriverUserId, this.drivers.get(wpDriverId)!);
+
+    const wpVehicleId = 'veh-wp-01';
+    this.vehicles.set(wpVehicleId, {
+      id: wpVehicleId,
+      driver_id: wpDriverId,
+      make: 'Bajaj',
+      model: 'Boxer 150X',
+      year: 2023,
+      license_plate: 'KMDK 234P',
+      color: 'Red',
+      category: 'BODA_STANDARD',
+      capacity: 1,
+      insurance_valid_until: '2027-12-31',
+      is_verified: true,
+      created_at: new Date().toISOString(),
+    });
+
+    // 3. Seed Real Verified Drivers with Approved Vehicles
     const driversData = [
       {
         userId: 'usr-drv-01',

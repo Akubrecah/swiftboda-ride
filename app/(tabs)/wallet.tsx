@@ -1,18 +1,33 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import { useSwiftBoda } from '../../context/SwiftBodaContext';
+import { useTheme } from '../../context/ThemeContext';
 import { SwiftBodaLoader } from '../../components/SwiftBodaLoader';
 
 export default function WalletScreen() {
-  const { currentUser, walletBalance, initiateMpesaSTKPush } = useSwiftBoda();
+  const { currentUser, walletBalance, initiateMpesaSTKPush, isProcessingPayment } = useSwiftBoda();
+  const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const [topUpAmount, setTopUpAmount] = useState('500');
   const [mpesaNumber, setMpesaNumber] = useState('+254712345678');
   const [isPushing, setIsPushing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    setTimeout(() => {
+      setRefreshing(false);
+    }, 600);
+  }, []);
 
   const handleMpesaPush = async () => {
+    if (isPushing || isProcessingPayment) return;
     const val = parseFloat(topUpAmount) || 0;
     if (val <= 0) {
       Alert.alert('Invalid Amount', 'Please enter a valid top-up amount.');
@@ -51,58 +66,76 @@ export default function WalletScreen() {
   ];
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Header */}
       <View style={[styles.header, { paddingTop: Math.max(insets.top + 8, 20) }]}>
-        <Text style={styles.headerTitle}>Swift Pay & Wallet</Text>
-        <Text style={styles.headerSub}>Instant ride payments & Safaricom M-Pesa</Text>
+        <Text style={[styles.headerTitle, { color: theme.textPrimary }]}>Swift Pay & Wallet</Text>
+        <Text style={[styles.headerSub, { color: theme.textSecondary }]}>Instant ride payments & Safaricom M-Pesa</Text>
       </View>
 
       <ScrollView
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
       >
         {/* Uber Cash / Swift Balance Card */}
-        <View style={styles.balanceCard}>
+        <View style={[styles.balanceCard, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
           <View style={styles.balanceTopRow}>
             <View>
-              <Text style={styles.balanceLabel}>SWIFT CASH BALANCE</Text>
-              <Text style={styles.balanceAmount}>KES {walletBalance.toFixed(2)}</Text>
+              <Text style={[styles.balanceLabel, { color: theme.textSecondary }]}>SWIFT CASH BALANCE</Text>
+              <Text style={[styles.balanceAmount, { color: theme.textPrimary }]}>KES {walletBalance.toFixed(2)}</Text>
             </View>
-            <View style={styles.balanceShieldBadge}>
-              <Ionicons name="shield-checkmark" size={16} color="#10B981" />
-              <Text style={styles.balanceShieldText}>Secured</Text>
+            <View style={[styles.balanceShieldBadge, { backgroundColor: theme.badgeBg }]}>
+              <Ionicons name="shield-checkmark" size={16} color={theme.primary} />
+              <Text style={[styles.balanceShieldText, { color: theme.primary }]}>Secured</Text>
             </View>
           </View>
-          <Text style={styles.balanceNote}>Auto-deducted on ride arrival • Zero transaction fees</Text>
+          <Text style={[styles.balanceNote, { color: theme.textSecondary }]}>Auto-deducted on ride arrival • Zero transaction fees</Text>
         </View>
 
         {/* Quick Top-up with M-Pesa */}
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Instant M-Pesa Top-Up</Text>
+        <View style={[styles.sectionCard, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
+          <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Instant M-Pesa Top-Up</Text>
 
-          <Text style={styles.inputLabel}>M-Pesa Mobile Number</Text>
-          <View style={styles.inputWrapper}>
-            <Ionicons name="call" size={16} color="#94A3B8" style={{ marginRight: 8 }} />
+          <Text style={[styles.inputLabel, { color: theme.textSecondary }]}>M-Pesa Mobile Number</Text>
+          <View style={[styles.inputWrapper, { backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
+            <Ionicons name="call" size={16} color={theme.textSecondary} style={{ marginRight: 8 }} />
             <TextInput
-              style={styles.textInput}
+              style={[styles.textInput, { color: theme.textPrimary }]}
               keyboardType="phone-pad"
               value={mpesaNumber}
               onChangeText={setMpesaNumber}
-              placeholderTextColor="#64748B"
+              placeholderTextColor={theme.textMuted}
             />
           </View>
 
-          <Text style={styles.inputLabel}>Amount (KES)</Text>
+          <Text style={[styles.inputLabel, { color: theme.textSecondary }]}>Amount (KES)</Text>
           <View style={styles.quickAmountRow}>
             {['250', '500', '1000', '2000'].map((val) => (
               <TouchableOpacity
                 key={val}
-                style={[styles.quickAmountBtn, topUpAmount === val && styles.quickAmountBtnActive]}
+                style={[
+                  styles.quickAmountBtn,
+                  { backgroundColor: theme.surfaceElevated, borderColor: theme.border },
+                  topUpAmount === val && { backgroundColor: theme.primary, borderColor: theme.primary },
+                ]}
                 onPress={() => setTopUpAmount(val)}
               >
-                <Text style={[styles.quickAmountText, topUpAmount === val && styles.quickAmountTextActive]}>
+                <Text
+                  style={[
+                    styles.quickAmountText,
+                    { color: theme.textSecondary },
+                    topUpAmount === val && { color: '#FFFFFF', fontWeight: '800' },
+                  ]}
+                >
                   KES {val}
                 </Text>
               </TouchableOpacity>
@@ -110,18 +143,18 @@ export default function WalletScreen() {
           </View>
 
           <TouchableOpacity
-            style={[styles.stkPushButton, isPushing && { opacity: 0.7 }]}
+            style={[styles.stkPushButton, (isPushing || isProcessingPayment) && { opacity: 0.7 }]}
             onPress={handleMpesaPush}
-            disabled={isPushing}
+            disabled={isPushing || isProcessingPayment}
           >
-            {isPushing ? (
+            {isPushing || isProcessingPayment ? (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Ionicons name="sync" size={16} color="#070A0F" />
+                <Ionicons name="sync" size={16} color="#FFFFFF" />
                 <Text style={styles.stkPushButtonText}>DISPATCHING STK PUSH...</Text>
               </View>
             ) : (
               <>
-                <Ionicons name="flash" size={16} color="#070A0F" />
+                <Ionicons name="flash" size={16} color="#FFFFFF" />
                 <Text style={styles.stkPushButtonText}>SEND M-PESA STK PUSH</Text>
               </>
             )}
@@ -137,60 +170,60 @@ export default function WalletScreen() {
         />
 
         {/* Payment Methods */}
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Payment Methods</Text>
+        <View style={[styles.sectionCard, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
+          <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Payment Methods</Text>
 
-          <View style={styles.pmRow}>
-            <View style={styles.pmIconBox}>
-              <Ionicons name="phone-portrait" size={18} color="#10B981" />
+          <View style={[styles.pmRow, { borderColor: theme.border }]}>
+            <View style={[styles.pmIconBox, { backgroundColor: theme.surfaceElevated }]}>
+              <Ionicons name="phone-portrait" size={18} color={theme.primary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.pmTitle}>Safaricom M-Pesa</Text>
-              <Text style={styles.pmSub}>{mpesaNumber} (Active)</Text>
+              <Text style={[styles.pmTitle, { color: theme.textPrimary }]}>Safaricom M-Pesa</Text>
+              <Text style={[styles.pmSub, { color: theme.textSecondary }]}>{mpesaNumber} (Active)</Text>
             </View>
-            <View style={styles.defaultBadge}>
-              <Text style={styles.defaultBadgeText}>DEFAULT</Text>
+            <View style={[styles.defaultBadge, { backgroundColor: theme.badgeBg }]}>
+              <Text style={[styles.defaultBadgeText, { color: theme.primary }]}>DEFAULT</Text>
             </View>
           </View>
 
-          <View style={styles.pmRow}>
-            <View style={styles.pmIconBox}>
+          <View style={[styles.pmRow, { borderColor: theme.border }]}>
+            <View style={[styles.pmIconBox, { backgroundColor: theme.surfaceElevated }]}>
               <Ionicons name="card" size={18} color="#3B82F6" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.pmTitle}>Visa / Mastercard</Text>
-              <Text style={styles.pmSub}>•••• •••• •••• 4242</Text>
+              <Text style={[styles.pmTitle, { color: theme.textPrimary }]}>Visa / Mastercard</Text>
+              <Text style={[styles.pmSub, { color: theme.textSecondary }]}>•••• •••• •••• 4242</Text>
             </View>
           </View>
 
           <View style={[styles.pmRow, { borderBottomWidth: 0 }]}>
-            <View style={styles.pmIconBox}>
+            <View style={[styles.pmIconBox, { backgroundColor: theme.surfaceElevated }]}>
               <Ionicons name="cash" size={18} color="#F59E0B" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.pmTitle}>Cash</Text>
-              <Text style={styles.pmSub}>Pay rider in person</Text>
+              <Text style={[styles.pmTitle, { color: theme.textPrimary }]}>Cash</Text>
+              <Text style={[styles.pmSub, { color: theme.textSecondary }]}>Pay rider in person</Text>
             </View>
           </View>
         </View>
 
         {/* Transactions Ledger */}
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Recent Transactions</Text>
+        <View style={[styles.sectionCard, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
+          <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Recent Transactions</Text>
           {transactions.map((tx) => (
             <View key={tx.id} style={styles.txRow}>
-              <View style={[styles.txIconCircle, tx.type === 'CREDIT' ? styles.txCreditIcon : styles.txDebitIcon]}>
+              <View style={[styles.txIconCircle, tx.type === 'CREDIT' ? { backgroundColor: theme.badgeBg } : { backgroundColor: theme.surfaceElevated }]}>
                 <Ionicons
                   name={tx.icon as any}
                   size={16}
-                  color={tx.type === 'CREDIT' ? '#10B981' : '#F8FAFC'}
+                  color={tx.type === 'CREDIT' ? theme.primary : theme.textPrimary}
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.txDesc}>{tx.desc}</Text>
-                <Text style={styles.txDate}>{tx.date}</Text>
+                <Text style={[styles.txDesc, { color: theme.textPrimary }]}>{tx.desc}</Text>
+                <Text style={[styles.txDate, { color: theme.textMuted }]}>{tx.date}</Text>
               </View>
-              <Text style={[styles.txAmount, tx.type === 'CREDIT' ? styles.txCreditAmount : styles.txDebitAmount]}>
+              <Text style={[styles.txAmount, tx.type === 'CREDIT' ? { color: theme.primary } : { color: theme.textPrimary }]}>
                 {tx.type === 'CREDIT' ? `+KES ${tx.amount.toFixed(0)}` : `KES ${tx.amount.toFixed(0)}`}
               </Text>
             </View>

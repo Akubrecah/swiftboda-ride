@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Alert, Share } from 'react-native';
+import { Alert, AppState, AppStateStatus, Share } from 'react-native';
 import { Buffer } from 'buffer';
 
 if (typeof (global as any).Buffer === 'undefined') {
@@ -11,6 +11,7 @@ import { darajaService, DarajaSTKResponse } from '../services/daraja/darajaServi
 import { DriverProfile, FareBreakdown, GeoLocation, PaymentMethod, SafetyIncident, Trip, TripState, VehicleCategory } from '../shared/types';
 import { calculateHaversineDistance, generateRouteWaypoints, interpolateCoordinate } from '../shared/utils/geo';
 import { getActiveRegion } from '../shared/constants/regions';
+import { syncClient, LiveOnlineDriver, AdminLiveState } from '../services/realtime/syncClient';
 
 export type { DarajaSTKResponse };
 
@@ -225,7 +226,7 @@ interface SwiftBodaContextType {
   sendChatMessage: (text: string) => void;
 
   // Nearby & Simulated Drivers
-  nearbyDrivers: { id: string; name: string; location: GeoLocation; category: VehicleCategory }[];
+  nearbyDrivers: { id: string; name: string; location: GeoLocation; category: VehicleCategory; isLive?: boolean }[];
   simulatedDriverPos: GeoLocation | null;
 
   // Driver Mode State
@@ -240,8 +241,19 @@ interface SwiftBodaContextType {
   driverStartTrip: (pin: string) => boolean;
   driverCompleteTrip: () => void;
 
+  // Live Operations Fleet & Telemetry (Synchronized across all devices)
+  adminLiveFleet: any[];
+  adminActiveTrips: Trip[];
+  refreshAdminLiveState: () => Promise<void>;
+
   // History (Scoped strictly to current user)
   pastTrips: Trip[];
+
+  // System Health & Startup
+  isHydrating: boolean;
+  isOnline: boolean;
+  isSubmittingRide: boolean;
+  isProcessingPayment: boolean;
 }
 
 const activeRegion = getActiveRegion();
@@ -668,7 +680,17 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Onboarding Persistence (Only shown on fresh install / first time)
   const [hasSeenOnboarding, setHasSeenOnboarding] = useState<boolean>(false);
 
+  // App Startup Hydration & Health
+  const [isHydrating, setIsHydrating] = useState<boolean>(true);
+  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [isSubmittingRide, setIsSubmittingRide] = useState<boolean>(false);
+  const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
+  const [appStateStatus, setAppStateStatus] = useState<AppStateStatus>(AppState.currentState);
+
   useEffect(() => {
+    const startTime = Date.now();
+    const MIN_STARTUP_MS = 1400; // Provide smooth branded startup loading animation
+
     Promise.all([
       AsyncStorage.getItem('@swiftboda_has_onboarded'),
       AsyncStorage.getItem('@swiftboda_current_user'),
@@ -692,7 +714,41 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       })
       .catch(() => {
         setHasSeenOnboarding(false);
+      })
+      .finally(async () => {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, MIN_STARTUP_MS - elapsed);
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining));
+        }
+        setIsHydrating(false);
       });
+  }, []);
+
+  // Monitor AppState transitions for background/foreground lifecycle recovery
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      setAppStateStatus(nextState);
+      if (nextState === 'active') {
+        // App returned to foreground: recover user session and verify state
+        AsyncStorage.getItem('@swiftboda_current_user')
+          .then((storedUser) => {
+            if (storedUser) {
+              try {
+                const parsed = JSON.parse(storedUser);
+                if (parsed?.id) {
+                  setCurrentUser((prev) => prev || parsed);
+                }
+              } catch (e) {}
+            }
+          })
+          .catch(() => {});
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   const completeOnboarding = async () => {
@@ -744,15 +800,40 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [incomingOffer, setIncomingOffer] = useState<Trip | null>(null);
   const [offerCountdown, setOfferCountdown] = useState<number>(15);
 
-  // Nearby simulated drivers in West Pokot (Seeded from Active Region)
-  const [nearbyDrivers] = useState(
+  // Nearby real-time online drivers + West Pokot regional seeds
+  const [nearbyDrivers, setNearbyDrivers] = useState<{
+    id: string;
+    name: string;
+    location: GeoLocation;
+    category: VehicleCategory;
+    isLive?: boolean;
+  }[]>(
     activeRegion.driverSeeds.map((d) => ({
       id: d.id,
       name: d.name,
       location: d.location,
       category: d.category,
+      isLive: false,
     }))
   );
+
+  // Admin Live Operations State (Real-time fleet & active trips)
+  const [adminLiveFleet, setAdminLiveFleet] = useState<any[]>([]);
+  const [adminActiveTrips, setAdminActiveTrips] = useState<Trip[]>([]);
+
+  const refreshAdminLiveState = async () => {
+    try {
+      const state = await syncClient.fetchAdminLiveState();
+      if (state) {
+        if (Array.isArray(state.onlineDrivers)) {
+          setAdminLiveFleet(state.onlineDrivers);
+        }
+        if (Array.isArray(state.activeTrips)) {
+          setAdminActiveTrips(state.activeTrips);
+        }
+      }
+    } catch {}
+  };
 
   // Admin Operations State
   const [adminDrivers, setAdminDrivers] = useState<AdminDriverVerification[]>(INITIAL_ADMIN_DRIVERS);
@@ -1007,36 +1088,115 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [destinationLocation, selectedCategory, promoCode]);
 
-  // Driver movement simulation during trip
+  // 1. Keep nearby drivers synchronized with live online drivers from Gateway
   useEffect(() => {
-    if (!activeTrip || !['DRIVER_ASSIGNED', 'DRIVER_ARRIVED', 'IN_TRIP'].includes(activeTrip.status)) {
-      return;
-    }
-
-    const startPos = activeTrip.status === 'IN_TRIP' ? activeTrip.pickup : nearbyDrivers[0].location;
-    const targetPos = activeTrip.status === 'IN_TRIP' ? activeTrip.destination : activeTrip.pickup;
-
-    const waypoints = generateRouteWaypoints(startPos, targetPos, 15);
-    let stepIndex = 0;
-
-    const interval = setInterval(() => {
-      if (stepIndex < waypoints.length) {
-        setSimulatedDriverPos(waypoints[stepIndex]);
-        stepIndex++;
-      } else {
-        clearInterval(interval);
-        if (activeTrip.status === 'DRIVER_ASSIGNED') {
-          setActiveTrip((prev) => (prev ? { ...prev, status: 'DRIVER_ARRIVED' } : null));
-        }
+    // Initial fetch of online drivers
+    syncClient.fetchOnlineDrivers().then((drivers) => {
+      if (drivers && drivers.length > 0) {
+        setNearbyDrivers(drivers);
       }
-    }, 1400);
+    });
 
-    return () => clearInterval(interval);
-  }, [activeTrip?.status]);
+    // Poll online drivers every 3.5 seconds
+    const interval = setInterval(() => {
+      syncClient.fetchOnlineDrivers().then((drivers) => {
+        if (drivers && drivers.length > 0) {
+          setNearbyDrivers(drivers);
+        }
+      });
+    }, 3500);
 
-  // 15-second driver incoming offer timer
+    // WebSocket listener for live driver location telemetry
+    const unsubscribeLocation = syncClient.onDriverLocationUpdate((liveDriver) => {
+      setNearbyDrivers((prev) => {
+        const existingIdx = prev.findIndex(
+          (d) => d.id === liveDriver.id || (d as any).driverId === (liveDriver as any).driverId
+        );
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = liveDriver;
+          return updated;
+        }
+        return [liveDriver, ...prev];
+      });
+
+      // If this driver is the one assigned to active trip, update driver position
+      if (activeTrip && (activeTrip.driverId === liveDriver.id || activeTrip.driverId === liveDriver.driverId)) {
+        setSimulatedDriverPos(liveDriver.location);
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      unsubscribeLocation();
+    };
+  }, [activeTrip?.driverId]);
+
+  // 2. Driver continuous background telemetry ping to gateway when online
   useEffect(() => {
-    if (!incomingOffer) return;
+    if (appMode !== 'DRIVER' || !isDriverOnline || !currentUser) return;
+
+    const sendPing = () => {
+      syncClient.sendDriverTelemetry({
+        driverId: currentUser.id,
+        name: currentUser.fullName,
+        phone: currentUser.phoneNumber,
+        plate: currentUser.driverDetails?.vehiclePlate || 'KMDK 234P',
+        model: currentUser.driverDetails?.vehicleModel || 'Bajaj Boxer 150X',
+        color: currentUser.driverDetails?.vehicleColor || 'Red',
+        category: currentUser.driverDetails?.vehicleCategory || 'BODA_STANDARD',
+        status: activeTrip ? (activeTrip.status === 'IN_TRIP' ? 'ON_TRIP' : 'EN_ROUTE_PICKUP') : 'ONLINE',
+        latitude: userLocation.latitude,
+        longitude: userLocation.longitude,
+        heading: userLocation.heading || 45,
+        rating: currentUser.rating,
+        tripId: activeTrip?.id,
+      });
+    };
+
+    sendPing();
+    const interval = setInterval(sendPing, 3000);
+    return () => clearInterval(interval);
+  }, [appMode, isDriverOnline, currentUser, userLocation, activeTrip?.id, activeTrip?.status]);
+
+  // 3. Driver listens for incoming ride offers
+  useEffect(() => {
+    if (appStateStatus !== 'active') return;
+    if (appMode !== 'DRIVER' || !isDriverOnline || activeTrip) return;
+
+    // A. Real-time WebSocket offer listener
+    const unsubscribeOffer = syncClient.onIncomingOffer((trip) => {
+      setIncomingOffer(trip);
+      setOfferCountdown(15);
+    });
+
+    // B. Real-time offer taken listener (if taken by another driver or cancelled)
+    const unsubscribeTaken = syncClient.onOfferTaken(({ tripId }) => {
+      setIncomingOffer((prev) => (prev && prev.id === tripId ? null : prev));
+    });
+
+    // C. Fast 2-second HTTP polling fallback for offers
+    const pollInterval = setInterval(() => {
+      if (!incomingOffer && currentUser) {
+        syncClient.fetchDriverOffers(currentUser.id).then((offers) => {
+          if (offers && offers.length > 0) {
+            setIncomingOffer(offers[0]);
+            setOfferCountdown(15);
+          }
+        });
+      }
+    }, 2000);
+
+    return () => {
+      unsubscribeOffer();
+      unsubscribeTaken();
+      clearInterval(pollInterval);
+    };
+  }, [appMode, isDriverOnline, activeTrip, incomingOffer, currentUser, appStateStatus]);
+
+  // 4. 15-second countdown timer for incoming driver offer
+  useEffect(() => {
+    if (appStateStatus !== 'active' || !incomingOffer) return;
     const timer = setInterval(() => {
       setOfferCountdown((prev) => {
         if (prev <= 1) {
@@ -1048,103 +1208,94 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [incomingOffer]);
+  }, [incomingOffer, appStateStatus]);
 
-  // Trigger incoming offer when driver is online
+  // 5. Global trip state synchronization across devices (Rider <-> Driver <-> Admin)
   useEffect(() => {
-    if (appMode === 'DRIVER' && isDriverOnline && !activeTrip && !incomingOffer) {
-      const timeout = setTimeout(() => {
-        const dummyOffer: Trip = {
-          id: `offer-${Date.now()}`,
-          riderId: 'rider-kenya-02',
-          rider: { name: 'Chepkemoi Nancy', phone: '+254722334455', rating: 4.96 },
-          driverId: currentUser?.id || 'user-driver-kipchoge',
-          pickup: { latitude: 1.2389, longitude: 35.1119, address: 'Makutano Junction Stage' },
-          destination: { latitude: 1.2440, longitude: 35.1180, address: 'Kapenguria County Referral Hospital', placeName: 'Kapenguria Hospital' },
-          category: 'BODA_STANDARD',
-          status: 'REQUESTED',
-          fare: {
-            baseFare: 50,
-            distanceFare: 30,
-            timeFare: 10,
-            bookingFee: 0,
-            surgeMultiplier: 1.0,
-            surgeAmount: 0,
-            discountAmount: 0,
-            totalFare: 90,
-            currency: 'KES',
-            estimatedDistanceKm: 1.9,
-            estimatedDurationMin: 6,
-          },
-          paymentMethod: 'MPESA',
-          paymentStatus: 'AUTHORIZED',
-          ridePin: '7391',
-          otpVerified: false,
-          createdAt: new Date().toISOString(),
-        };
-        setIncomingOffer(dummyOffer);
-        setOfferCountdown(15);
-      }, 5000);
-      return () => clearTimeout(timeout);
-    }
-  }, [appMode, isDriverOnline, activeTrip, incomingOffer, currentUser?.id]);
+    if (!activeTrip) return;
 
-  const requestRide = () => {
-    if (!destinationLocation || !fareEstimate || !currentUser) return;
+    // A. Subscribe to WebSocket channel for this active trip
+    syncClient.subscribeTrip(activeTrip.id);
+
+    // B. WebSocket listener for live status changes
+    const unsubscribeStatus = syncClient.onTripStatusChange((updatedTrip) => {
+      if (updatedTrip.id === activeTrip.id) {
+        setActiveTrip(updatedTrip);
+      }
+    });
+
+    // C. Fast HTTP polling fallback (every 2s) to guarantee state synchronization across devices
+    const pollInterval = setInterval(() => {
+      syncClient.fetchTrip(activeTrip.id).then((serverTrip) => {
+        if (serverTrip && serverTrip.status !== activeTrip.status) {
+          setActiveTrip(serverTrip);
+        }
+      });
+    }, 2000);
+
+    return () => {
+      unsubscribeStatus();
+      clearInterval(pollInterval);
+      syncClient.unsubscribeTrip(activeTrip.id);
+    };
+  }, [activeTrip?.id, activeTrip?.status]);
+
+  // 6. Admin Live Fleet & Active Trips Real-time Sync
+  useEffect(() => {
+    if (appMode === 'ADMIN' && currentUser?.role === 'ADMIN') {
+      refreshAdminLiveState();
+      const interval = setInterval(refreshAdminLiveState, 2500);
+      return () => clearInterval(interval);
+    }
+  }, [appMode, currentUser?.role]);
+
+  const requestRide = async () => {
+    if (isSubmittingRide || !destinationLocation || !fareEstimate || !currentUser) return;
+    setIsSubmittingRide(true);
 
     const ridePin = Math.floor(1000 + Math.random() * 9000).toString();
-    const tempTrip: Trip = {
-      id: `trip-${Date.now()}`,
+    const payload = {
       riderId: currentUser.id,
       rider: { name: currentUser.fullName, phone: currentUser.phoneNumber, rating: currentUser.rating },
       recipientRider: bookingForOther.enabled && bookingForOther.name.trim()
         ? { name: bookingForOther.name.trim(), phone: bookingForOther.phone.trim() || '+254700000000', isOther: true }
         : undefined,
-      driverId: 'user-driver-kipchoge',
-      driver: {
-        name: 'Kipchoge Moto',
-        phone: '+254712345678',
-        rating: 4.92,
-        vehiclePlate: 'KMC 123A',
-        vehicleModel: 'TVS HLX 150',
-        vehicleColor: 'Red',
-        vehicleCategory: selectedCategory,
-      },
       pickup: userLocation,
       destination: destinationLocation,
       category: selectedCategory,
-      status: 'SEARCHING_DRIVER',
       fare: fareEstimate,
       paymentMethod,
-      paymentStatus: 'PENDING',
       ridePin,
-      otpVerified: false,
-      createdAt: new Date().toISOString(),
     };
 
-    setActiveTrip(tempTrip);
-    const greeting = bookingForOther.enabled && bookingForOther.name
-      ? `Jambo! I see you booked for ${bookingForOther.name}. Heading to pickup location now.`
-      : 'Jambo! I am heading to your pickup location now.';
-
-    setChatMessages([
-      { id: 'msg-1', sender: 'DRIVER', text: greeting, time: 'Just now' },
-    ]);
-
-    setTimeout(() => {
-      setActiveTrip((prev) => (prev && prev.status === 'SEARCHING_DRIVER' ? { ...prev, status: 'DRIVER_ASSIGNED' } : prev));
-    }, 2500);
+    const res = await syncClient.requestRide(payload);
+    if (res.success && res.trip) {
+      setActiveTrip(res.trip);
+      const greeting = bookingForOther.enabled && bookingForOther.name
+        ? `Jambo! I see you booked for ${bookingForOther.name}. Request dispatched to nearest available driver.`
+        : 'Jambo! Looking for nearest available boda now.';
+      setChatMessages([
+        { id: `msg-${Date.now()}`, sender: 'DRIVER', text: greeting, time: 'Just now' },
+      ]);
+    } else {
+      Alert.alert('Booking Error', res.error || 'Failed to submit ride request. Please try again.');
+    }
+    setIsSubmittingRide(false);
   };
 
-  const cancelRide = () => {
+  const cancelRide = async () => {
     if (activeTrip) {
       const cancelled: Trip = {
         ...activeTrip,
         status: 'CANCELLED',
         cancelledAt: new Date().toISOString(),
-        cancelledBy: 'RIDER',
+        cancelledBy: (appMode === 'DRIVER' ? 'DRIVER' : 'RIDER') as any,
       };
       setAllTrips((prev) => [cancelled, ...prev]);
+      await syncClient.updateTripStatus(activeTrip.id, 'CANCELLED', {
+        actorId: currentUser?.id,
+        actorRole: appMode === 'DRIVER' ? 'DRIVER' : 'RIDER',
+      });
       setActiveTrip(null);
       setSimulatedDriverPos(null);
     }
@@ -1206,6 +1357,14 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     amount: number,
     accountReference: string = 'SwiftBoda'
   ): Promise<DarajaSTKResponse> => {
+    if (isProcessingPayment) {
+      return {
+        success: false,
+        errorMessage: 'Payment request is already in progress. Please wait.',
+        customerMessage: 'Processing previous transaction...',
+      };
+    }
+    setIsProcessingPayment(true);
     try {
       const response = await darajaService.initiateSTKPush(
         phoneNumber,
@@ -1230,6 +1389,8 @@ export const SwiftBodaProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         customerMessage: msg,
         errorMessage: msg,
       };
+    } finally {
+      setIsProcessingPayment(false);
     }
   };
 
@@ -1314,33 +1475,70 @@ Shared safely from Swift Boda Kenya`;
   };
 
   // Driver Actions
-  const acceptIncomingOffer = () => {
-    if (incomingOffer) {
-      setActiveTrip({ ...incomingOffer, status: 'DRIVER_ASSIGNED' });
+  const acceptIncomingOffer = async () => {
+    if (!incomingOffer || !currentUser) return;
+    const driverDetails = {
+      name: currentUser.fullName,
+      phone: currentUser.phoneNumber,
+      rating: currentUser.rating,
+      vehiclePlate: currentUser.driverDetails?.vehiclePlate || 'KMDK 234P',
+      vehicleModel: currentUser.driverDetails?.vehicleModel || 'Bajaj Boxer 150X',
+      vehicleColor: currentUser.driverDetails?.vehicleColor || 'Red',
+      vehicleCategory: currentUser.driverDetails?.vehicleCategory || incomingOffer.category || 'BODA_STANDARD',
+    };
+
+    const res = await syncClient.acceptRideOffer(incomingOffer.id, currentUser.id, driverDetails);
+    if (res.success && res.trip) {
+      setActiveTrip(res.trip);
+      setIncomingOffer(null);
+    } else {
+      Alert.alert('Offer Unavailable', res.error || 'This ride offer has expired or was accepted by another driver.');
       setIncomingOffer(null);
     }
   };
 
-  const declineIncomingOffer = () => {
+  const declineIncomingOffer = async () => {
+    if (incomingOffer && currentUser) {
+      await syncClient.declineRideOffer(incomingOffer.id, currentUser.id);
+    }
     setIncomingOffer(null);
     setOfferCountdown(15);
   };
 
-  const driverArrived = () => {
+  const driverArrived = async () => {
     if (activeTrip) {
-      setActiveTrip({ ...activeTrip, status: 'DRIVER_ARRIVED' });
+      const res = await syncClient.updateTripStatus(activeTrip.id, 'DRIVER_ARRIVED', {
+        actorId: currentUser?.id,
+        actorRole: 'DRIVER',
+      });
+      if (res.success && res.trip) {
+        setActiveTrip(res.trip);
+      } else {
+        setActiveTrip({ ...activeTrip, status: 'DRIVER_ARRIVED' });
+      }
     }
   };
 
-  const driverStartTrip = (pin: string) => {
-    if (activeTrip && activeTrip.ridePin === pin) {
-      setActiveTrip({ ...activeTrip, status: 'IN_TRIP', otpVerified: true, startedAt: new Date().toISOString() });
-      return true;
+  const driverStartTrip = (pin: string): boolean => {
+    if (!activeTrip) return false;
+    const expectedPin = activeTrip.ridePin;
+    if (pin.trim() !== expectedPin?.trim()) {
+      return false;
     }
-    return false;
+    syncClient.updateTripStatus(activeTrip.id, 'IN_TRIP', {
+      enteredPin: pin.trim(),
+      actorId: currentUser?.id,
+      actorRole: 'DRIVER',
+    }).then((res) => {
+      if (res.success && res.trip) {
+        setActiveTrip(res.trip);
+      }
+    });
+    setActiveTrip({ ...activeTrip, status: 'IN_TRIP', otpVerified: true, startedAt: new Date().toISOString() });
+    return true;
   };
 
-  const driverCompleteTrip = () => {
+  const driverCompleteTrip = async () => {
     if (activeTrip && currentUser) {
       const completedTrip = { ...activeTrip, status: 'COMPLETED' as TripState, completedAt: new Date().toISOString() };
       const driverCut = activeTrip.fare.totalFare * 0.85;
@@ -1358,6 +1556,11 @@ Shared safely from Swift Boda Kenya`;
       };
       setCurrentUser(updatedDriver);
       setAllTrips((prev) => [completedTrip, ...prev]);
+
+      await syncClient.updateTripStatus(activeTrip.id, 'COMPLETED', {
+        actorId: currentUser.id,
+        actorRole: 'DRIVER',
+      });
       setActiveTrip(null);
     }
   };
@@ -1533,6 +1736,10 @@ Shared safely from Swift Boda Kenya`;
   return (
     <SwiftBodaContext.Provider
       value={{
+        isHydrating,
+        isOnline,
+        isSubmittingRide,
+        isProcessingPayment,
         currentUser,
         isAuthenticated: !!currentUser,
         pendingOtpPhone,
@@ -1589,6 +1796,10 @@ Shared safely from Swift Boda Kenya`;
         pastTrips,
         driverVerificationStatus,
         applyForDriver,
+        // Live Operations Fleet & Telemetry (Synchronized across all devices)
+        adminLiveFleet: currentUser?.role === 'ADMIN' ? adminLiveFleet : [],
+        adminActiveTrips: currentUser?.role === 'ADMIN' ? adminActiveTrips : [],
+        refreshAdminLiveState,
         // Row Level Security (RLS) - Isolation of Administrative and Driver registries
         adminDrivers: currentUser?.role === 'ADMIN' ? adminDrivers : [],
         approveDriver,

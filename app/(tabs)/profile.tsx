@@ -1,9 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
@@ -19,10 +20,25 @@ import * as Haptics from 'expo-haptics';
 import AuthModal from '../../components/AuthModal';
 import { DriverKycOnboardingModal, DriverKycSubmission } from '../../components/DriverKycOnboardingModal';
 import { useSwiftBoda } from '../../context/SwiftBodaContext';
+import { useTheme } from '../../context/ThemeContext';
+import { ThemeColors } from '../../constants/theme';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { theme, themeMode, setThemeMode } = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    setTimeout(() => {
+      setRefreshing(false);
+    }, 600);
+  }, []);
   const {
     currentUser,
     logout,
@@ -141,7 +157,7 @@ export default function ProfileScreen() {
       } else {
         Alert.alert('Verification Dismissed', 'Biometric test was cancelled or did not match.');
       }
-    } catch (err) {
+    } catch (_err) {
       Alert.alert('Sensor Error', 'Could not open native biometric prompt.');
     }
   };
@@ -152,7 +168,7 @@ export default function ProfileScreen() {
       return;
     }
     if (newPinInput !== confirmPinInput) {
-      Alert.alert('PIN Mismatch', 'The two PIN entries do not match. Please re-type.');
+      Alert.alert('PIN Mismatch', 'The PINs you entered do not match. Please try again.');
       return;
     }
     await AsyncStorage.setItem('@swiftboda_security_pin', newPinInput);
@@ -168,16 +184,12 @@ export default function ProfileScreen() {
 
   // Driver Application Modal States
   const [showDriverApplicationModal, setShowDriverApplicationModal] = useState(false);
-  const [applyPlate, setApplyPlate] = useState('');
-  const [applyModel, setApplyModel] = useState('');
-  const [applyNationalId, setApplyNationalId] = useState('');
-  const [applyDlNumber, setApplyDlNumber] = useState('');
 
   // Add Saved Place Modal
   const [showAddPlaceModal, setShowAddPlaceModal] = useState(false);
   const [placeName, setPlaceName] = useState('');
   const [placeAddress, setPlaceAddress] = useState('');
-  const [placeIcon, setPlaceIcon] = useState('pin');
+  const [placeIcon] = useState('pin');
 
   const handleSavePlace = () => {
     if (!placeName.trim() || !placeAddress.trim()) {
@@ -222,6 +234,14 @@ export default function ProfileScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: 110 + insets.bottom }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
       >
         {/* User Card */}
         {currentUser ? (
@@ -295,11 +315,11 @@ export default function ProfileScreen() {
 
         {/* Quick Service Buttons */}
         <View style={styles.quickNavRow}>
-          <TouchableOpacity style={styles.quickNavTile} onPress={() => router.push('/(tabs)/explore')}>
+          <TouchableOpacity style={styles.quickNavTile} onPress={() => router.push('/explore')}>
             <Ionicons name="receipt-outline" size={22} color="#10B981" />
             <Text style={styles.quickNavText}>Activity</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.quickNavTile} onPress={() => router.push('/(tabs)/wallet')}>
+          <TouchableOpacity style={styles.quickNavTile} onPress={() => router.push('/wallet')}>
             <Ionicons name="wallet-outline" size={22} color="#10B981" />
             <Text style={styles.quickNavText}>Wallet</Text>
           </TouchableOpacity>
@@ -481,7 +501,7 @@ export default function ProfileScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.menuTitle}>Change 4-Digit Security PIN</Text>
-              <Text style={styles.menuSub}>Current PIN: •••• (Default: 1234)</Text>
+              <Text style={styles.menuSub}>Current PIN: •••• {currentSecurityPin === '1234' ? '(Default: 1234)' : '(Configured)'}</Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color="#94A3B8" />
           </TouchableOpacity>
@@ -532,6 +552,53 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Appearance & Display Theme Section */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Appearance & Theme</Text>
+          <Text style={styles.settingSub}>Choose between System, Light, and Dark themes</Text>
+
+          <View style={styles.themeSelectorRow}>
+            {(['system', 'light', 'dark'] as const).map((mode) => {
+              const isSelected = themeMode === mode;
+              return (
+                <TouchableOpacity
+                  key={mode}
+                  style={[
+                    styles.themeOptionBtn,
+                    {
+                      backgroundColor: isSelected ? theme.badgeBg : theme.surfaceElevated,
+                      borderColor: isSelected ? theme.primary : theme.border,
+                    },
+                  ]}
+                  onPress={() => setThemeMode(mode)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={
+                      mode === 'system'
+                        ? 'phone-portrait-outline'
+                        : mode === 'light'
+                        ? 'sunny-outline'
+                        : 'moon-outline'
+                    }
+                    size={18}
+                    color={isSelected ? theme.primary : theme.textSecondary}
+                  />
+                  <Text
+                    style={[
+                      styles.themeOptionText,
+                      { color: isSelected ? theme.primary : theme.textSecondary },
+                      isSelected && { fontWeight: '800' },
+                    ]}
+                  >
+                    {mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
         {/* Driver Status / Drive with SwiftBoda in West Pokot Banner */}
         {currentUser?.role === 'RIDER' && (
           <View style={{ marginVertical: 8 }}>
@@ -540,7 +607,7 @@ export default function ProfileScreen() {
                 style={styles.driverModeBanner}
                 onPress={() => {
                   setAppMode('DRIVER');
-                  router.push('/(tabs)');
+                  router.push('/');
                 }}
               >
                 <View style={styles.driverBannerIcon}>
@@ -729,188 +796,211 @@ export default function ProfileScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#070A0F' },
-  header: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    backgroundColor: '#0E141F',
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  headerTitle: { color: '#F8FAFC', fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
-  scrollContent: { padding: 16, gap: 14 },
+const createStyles = (theme: ThemeColors) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.background },
+    header: {
+      paddingHorizontal: 16,
+      paddingBottom: 16,
+      backgroundColor: theme.headerBg,
+      borderBottomWidth: 1,
+      borderColor: theme.border,
+    },
+    headerTitle: { color: theme.textPrimary, fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
+    scrollContent: { padding: 16, gap: 14 },
 
-  userCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  avatarCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
-  userInfo: { flex: 1 },
-  userName: { color: '#F8FAFC', fontSize: 17, fontWeight: '800' },
-  roleBadge: { backgroundColor: 'rgba(16, 185, 129, 0.15)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  driverBadge: { backgroundColor: 'rgba(245, 158, 11, 0.15)' },
-  roleBadgeText: { color: '#10B981', fontSize: 10, fontWeight: '800' },
-  ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
-  ratingText: { color: '#F59E0B', fontSize: 12, fontWeight: '700' },
-  userPhone: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-  editProfileBtn: { padding: 8, backgroundColor: 'rgba(16, 185, 129, 0.1)', borderRadius: 10 },
+    userCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.cardBg,
+      borderRadius: 18,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: theme.cardBorder,
+    },
+    avatarCircle: {
+      width: 52,
+      height: 52,
+      borderRadius: 26,
+      backgroundColor: theme.badgeBg,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 14,
+    },
+    userInfo: { flex: 1 },
+    userName: { color: theme.textPrimary, fontSize: 17, fontWeight: '800' },
+    roleBadge: { backgroundColor: theme.badgeBg, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+    driverBadge: { backgroundColor: 'rgba(245, 158, 11, 0.15)' },
+    roleBadgeText: { color: theme.primary, fontSize: 10, fontWeight: '800' },
+    ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+    ratingText: { color: theme.secondary, fontSize: 12, fontWeight: '700' },
+    userPhone: { color: theme.textSecondary, fontSize: 12, marginTop: 2 },
+    editProfileBtn: { padding: 8, backgroundColor: theme.badgeBg, borderRadius: 10 },
 
-  quickNavRow: { flexDirection: 'row', gap: 10 },
-  quickNavTile: {
-    flex: 1,
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  quickNavText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
+    quickNavRow: { flexDirection: 'row', gap: 10 },
+    quickNavTile: {
+      flex: 1,
+      backgroundColor: theme.cardBg,
+      borderRadius: 14,
+      paddingVertical: 14,
+      alignItems: 'center',
+      gap: 6,
+      borderWidth: 1,
+      borderColor: theme.cardBorder,
+    },
+    quickNavText: { color: theme.textPrimary, fontSize: 12, fontWeight: '700' },
 
-  sectionCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    gap: 12,
-  },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sectionTitle: { color: '#F8FAFC', fontSize: 15, fontWeight: '800' },
+    sectionCard: {
+      backgroundColor: theme.cardBg,
+      borderRadius: 16,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: theme.cardBorder,
+      gap: 12,
+    },
+    sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    sectionTitle: { color: theme.textPrimary, fontSize: 15, fontWeight: '800' },
 
-  driverDetailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
-  driverDetailItem: { width: '48%', backgroundColor: '#070A0F', padding: 12, borderRadius: 12 },
-  driverDetailLabel: { color: '#64748B', fontSize: 10, fontWeight: '700' },
-  driverDetailVal: { color: '#F8FAFC', fontSize: 14, fontWeight: '800', marginTop: 2 },
-  driverDetailValGreen: { color: '#10B981', fontSize: 15, fontWeight: '900', marginTop: 2 },
+    driverDetailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+    driverDetailItem: { width: '48%', backgroundColor: theme.surfaceElevated, padding: 12, borderRadius: 12 },
+    driverDetailLabel: { color: theme.textMuted, fontSize: 10, fontWeight: '700' },
+    driverDetailVal: { color: theme.textPrimary, fontSize: 14, fontWeight: '800', marginTop: 2 },
+    driverDetailValGreen: { color: theme.primary, fontSize: 15, fontWeight: '900', marginTop: 2 },
 
-  addPlaceBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#10B981',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
-  addPlaceBtnText: { color: '#070A0F', fontSize: 11, fontWeight: '800' },
-  noPlacesText: { color: '#64748B', fontSize: 12, fontStyle: 'italic' },
-  savedPlaceRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
-  placeIconCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  savedPlaceName: { color: '#F8FAFC', fontSize: 13, fontWeight: '700' },
-  savedPlaceAddress: { color: '#94A3B8', fontSize: 11, marginTop: 1 },
-  deletePlaceBtn: { padding: 8 },
+    addPlaceBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      backgroundColor: theme.primary,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 10,
+    },
+    addPlaceBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+    noPlacesText: { color: theme.textMuted, fontSize: 12, fontStyle: 'italic' },
+    savedPlaceRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
+    placeIconCircle: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      backgroundColor: theme.badgeBg,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    savedPlaceName: { color: theme.textPrimary, fontSize: 13, fontWeight: '700' },
+    savedPlaceAddress: { color: theme.textSecondary, fontSize: 11, marginTop: 1 },
+    deletePlaceBtn: { padding: 8 },
 
-  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  settingTitle: { color: '#F8FAFC', fontSize: 13, fontWeight: '700' },
-  settingSub: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  divider: { height: 1, backgroundColor: 'rgba(255, 255, 255, 0.06)' },
+    settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+    settingTitle: { color: theme.textPrimary, fontSize: 13, fontWeight: '700' },
+    settingSub: { color: theme.textSecondary, fontSize: 11, marginTop: 2 },
+    divider: { height: 1, backgroundColor: theme.border },
 
-  menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
-  menuIconBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  menuTitle: { color: '#F8FAFC', fontSize: 13, fontWeight: '700' },
-  menuSub: { color: '#94A3B8', fontSize: 11, marginTop: 1 },
-  sosIconBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  sosTitle: { color: '#EF4444', fontSize: 13, fontWeight: '800' },
-  sosSub: { color: '#94A3B8', fontSize: 11, marginTop: 1 },
+    menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+    menuIconBox: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 12,
+    },
+    menuTitle: { color: theme.textPrimary, fontSize: 13, fontWeight: '700' },
+    menuSub: { color: theme.textSecondary, fontSize: 11, marginTop: 1 },
+    sosIconBox: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: theme.sosRedSurface,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 12,
+    },
+    sosTitle: { color: theme.sosRed, fontSize: 13, fontWeight: '800' },
+    sosSub: { color: theme.textSecondary, fontSize: 11, marginTop: 1 },
 
-  driverModeBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    gap: 12,
-  },
-  driverBannerIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  driverBannerTitle: { color: '#F8FAFC', fontSize: 15, fontWeight: '800' },
-  driverBannerSub: { color: '#10B981', fontSize: 11, fontWeight: '600', marginTop: 1 },
+    driverModeBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: theme.badgeBg,
+      borderRadius: 16,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: theme.badgeBorder,
+      gap: 12,
+    },
+    driverBannerIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: theme.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    driverBannerTitle: { color: theme.textPrimary, fontSize: 15, fontWeight: '800' },
+    driverBannerSub: { color: theme.primary, fontSize: 11, fontWeight: '600', marginTop: 1 },
 
-  switchAccountBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  switchAccountText: { color: '#10B981', fontSize: 14, fontWeight: '800' },
+    switchAccountBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.cardBg,
+      borderRadius: 14,
+      paddingVertical: 14,
+      borderWidth: 1,
+      borderColor: theme.badgeBorder,
+    },
+    switchAccountText: { color: theme.primary, fontSize: 14, fontWeight: '800' },
 
-  signOutBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.2)',
-  },
-  signOutText: { color: '#EF4444', fontSize: 14, fontWeight: '800' },
+    signOutBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.sosRedSurface,
+      borderRadius: 14,
+      paddingVertical: 14,
+      borderWidth: 1,
+      borderColor: theme.border,
+      marginTop: 4,
+    },
+    signOutText: { color: theme.sosRed, fontSize: 14, fontWeight: '800' },
 
-  // Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', padding: 20 },
-  addPlaceCard: { backgroundColor: '#0E141F', borderRadius: 20, padding: 20, gap: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  addPlaceTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '800' },
-  inputLabel: { color: '#94A3B8', fontSize: 11, fontWeight: '700' },
-  textInput: {
-    backgroundColor: '#070A0F',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    color: '#F8FAFC',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-  },
-  savePlaceConfirmBtn: { backgroundColor: '#10B981', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 6 },
-  savePlaceConfirmText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-});
+    // Modal
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', padding: 20 },
+    addPlaceCard: { backgroundColor: theme.cardBg, borderRadius: 20, padding: 20, gap: 12, borderWidth: 1, borderColor: theme.cardBorder },
+    addPlaceTitle: { color: theme.textPrimary, fontSize: 18, fontWeight: '800' },
+    inputLabel: { color: theme.textSecondary, fontSize: 11, fontWeight: '700' },
+    textInput: {
+      backgroundColor: theme.inputBg,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.inputBorder,
+      color: theme.textPrimary,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      fontSize: 14,
+    },
+    savePlaceConfirmBtn: { backgroundColor: theme.primary, paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 6 },
+    savePlaceConfirmText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+    themeSelectorRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      marginTop: 4,
+    },
+    themeOptionBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      paddingVertical: 12,
+      borderRadius: 12,
+      borderWidth: 1.5,
+    },
+    themeOptionText: {
+      fontSize: 13,
+      fontWeight: '600',
+    },
+  });

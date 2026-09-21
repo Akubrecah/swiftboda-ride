@@ -18,8 +18,9 @@ const envSchema = z.object({
   MPESA_CONSUMER_SECRET: z.string().default('mock_daraja_consumer_secret'),
   MPESA_SHORTCODE: z.string().default('174379'),
   MPESA_PASSKEY: z.string().default('mock_daraja_passkey'),
-  MAPS_PROVIDER: z.enum(['OSRM', 'GOOGLE', 'MAPBOX']).default('OSRM'),
+  MAPS_PROVIDER: z.enum(['OSRM', 'GOOGLE', 'MAPBOX', 'SERPLY']).default('SERPLY'),
   GOOGLE_MAPS_API_KEY: z.string().optional(),
+  SERPLY_API_KEY: z.string().default('TF5AxxbSLF1ezxP2tC4EyKBx'),
 });
 
 export type Config = z.infer<typeof envSchema>;

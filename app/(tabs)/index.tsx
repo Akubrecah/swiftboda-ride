@@ -1,14 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Dimensions,
   Image,
+  Linking,
   Modal,
-  Platform,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
@@ -16,12 +15,17 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSwiftBoda } from '../../context/SwiftBodaContext';
+import { useTheme } from '../../context/ThemeContext';
 import { IntegratedMapView } from '../../components/IntegratedMapView';
 import AuthModal from '../../components/AuthModal';
 import { DriverKycOnboardingModal, DriverKycSubmission } from '../../components/DriverKycOnboardingModal';
 import { VehicleCategory } from '../../shared/types';
 import { getActiveRegion } from '../../shared/constants/regions';
 import { generateAndShareReceiptPDF } from '../../services/receiptPdfService';
+import { createHomeStyles } from '../../styles/home.styles';
+import { searchPlacesLive } from '../../services/placesService';
+import { NormalizedPlace } from '../../services/maps-service/serply/types';
+import { calculateHaversineDistance } from '../../shared/utils/geo';
 
 const { width } = Dimensions.get('window');
 
@@ -30,6 +34,8 @@ const WEST_POKOT_DESTINATIONS = activeRegion.landmarks;
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const { theme } = useTheme();
+  const styles = useMemo(() => createHomeStyles(theme), [theme]);
   const {
     currentUser,
     isAuthenticated,
@@ -49,6 +55,8 @@ export default function HomeScreen() {
     fareEstimate,
     activeTrip,
     requestRide,
+    isSubmittingRide,
+    isOnline,
     cancelRide,
     rateTrip,
     triggerSOS,
@@ -79,11 +87,14 @@ export default function HomeScreen() {
     auditTransaction,
     driverVerificationStatus,
     applyForDriver,
+    adminLiveFleet,
+    adminActiveTrips,
+    refreshAdminLiveState,
     logout,
   } = useSwiftBoda();
 
   // Admin Operations & Verification State
-  const [adminSubTab, setAdminSubTab] = useState<'DRIVERS' | 'RIDERS' | 'TRANSACTIONS'>('DRIVERS');
+  const [adminSubTab, setAdminSubTab] = useState<'LIVE_OPS' | 'DRIVERS' | 'RIDERS' | 'TRANSACTIONS'>('LIVE_OPS');
   const [selectedDriverDoc, setSelectedDriverDoc] = useState<any | null>(null);
   const [showDriverDocModal, setShowDriverDocModal] = useState(false);
   const [selectedTxAudit, setSelectedTxAudit] = useState<any | null>(null);
@@ -115,10 +126,55 @@ export default function HomeScreen() {
   const [selectedCompliments, setSelectedCompliments] = useState<string[]>(['Clean helmet', 'Smooth ride']);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
-  const filteredDestinations = WEST_POKOT_DESTINATIONS.filter((d) =>
-    d.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    d.address.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Real Serply Google Maps Live Search State
+  const [placesResults, setPlacesResults] = useState<NormalizedPlace[]>([]);
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  // Debounced live search with deduplication and error handling
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setPlacesResults([]);
+      setIsSearchingPlaces(false);
+      setSearchError(null);
+      return;
+    }
+
+    setIsSearchingPlaces(true);
+    setSearchError(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        const result = await searchPlacesLive(trimmed, { num: 20, hl: 'en', gl: 'ke' });
+        setPlacesResults(result.places);
+      } catch (err: any) {
+        console.error('[SerplyUI] Live search error:', err);
+        if (err.message?.includes('temporarily unavailable')) {
+          setSearchError('The location service is temporarily unavailable. Please try again.');
+        } else if (err.message?.includes('Rate limit')) {
+          setSearchError('Rate limit exceeded from location service. Please try again in a few moments.');
+        } else {
+          setSearchError(err.message || 'Unable to search places. Please check your network.');
+        }
+      } finally {
+        setIsSearchingPlaces(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const handleSelectPlace = (place: NormalizedPlace) => {
+    setDestinationLocation({
+      latitude: place.latitude,
+      longitude: place.longitude,
+      address: place.address || place.district || place.name,
+      placeName: place.name,
+    });
+    setShowSearchModal(false);
+    setSearchQuery('');
+  };
 
   const handleSelectDestination = (dest: typeof WEST_POKOT_DESTINATIONS[0]) => {
     setDestinationLocation({
@@ -134,6 +190,8 @@ export default function HomeScreen() {
   const handleClearDestination = () => {
     setDestinationLocation(null);
     setSearchQuery('');
+    setPlacesResults([]);
+    setSearchError(null);
   };
 
   // Role-Based Security & Dashboard Isolation Guard
@@ -157,74 +215,78 @@ export default function HomeScreen() {
   ];
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* 1. UBER TOP HEADER */}
-      <View style={[styles.topHeader, { paddingTop: Math.max(insets.top + 8, 20) }]}>
+      <View style={[styles.topHeader, { paddingTop: Math.max(insets.top + 6, 16), backgroundColor: theme.headerBg, borderColor: theme.border }]}>
         <View style={styles.brandRow}>
-          {/* Logo */}
-          <View style={styles.brandLogo}>
-            <View style={styles.onlineDot} />
-            <Text style={styles.brandTitle}>
-              Swift<Text style={{ color: '#10B981' }}>Boda</Text>
-            </Text>
+          {/* Left: Brand Logo + Compact Pilot Indicator */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 }}>
+            <View style={styles.brandLogo}>
+              <View style={[styles.onlineDot, { backgroundColor: isOnline ? theme.primary : theme.textMuted }]} />
+              <Text style={[styles.brandTitle, { color: theme.textPrimary }]}>
+                Swift<Text style={{ color: theme.primary }}>Boda</Text>
+              </Text>
+            </View>
+            <View style={[styles.pilotBadge, { backgroundColor: theme.badgeBg, borderColor: theme.badgeBorder, paddingHorizontal: 7, paddingVertical: 2.5 }]}>
+              <Ionicons name="location-sharp" size={10} color={theme.primary} />
+              <Text style={[styles.pilotBadgeText, { color: theme.primary, fontSize: 10 }]}>West Pokot</Text>
+            </View>
           </View>
 
-          {/* Role-Based Mode Switcher & West Pokot Pilot Indicator */}
+          {/* Center: Role Switcher (for Driver / Admin) */}
           {currentUser?.role === 'ADMIN' ? (
-            <View style={styles.modeSwitchPill}>
+            <View style={[styles.modeSwitchPill, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}>
               <TouchableOpacity
-                style={[styles.modePillBtn, appMode === 'ADMIN' && styles.modePillBtnActive]}
+                style={[styles.modePillBtn, appMode === 'ADMIN' && { backgroundColor: theme.primary }]}
                 onPress={() => setAppMode('ADMIN')}
               >
-                <Text style={[styles.modePillText, appMode === 'ADMIN' && styles.modePillTextActive]}>Admin</Text>
+                <Text style={[styles.modePillText, { color: appMode === 'ADMIN' ? '#FFFFFF' : theme.textSecondary }]}>Admin</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modePillBtn, appMode === 'RIDER' && styles.modePillBtnActive]}
+                style={[styles.modePillBtn, appMode === 'RIDER' && { backgroundColor: theme.primary }]}
                 onPress={() => setAppMode('RIDER')}
               >
-                <Text style={[styles.modePillText, appMode === 'RIDER' && styles.modePillTextActive]}>Rider</Text>
+                <Text style={[styles.modePillText, { color: appMode === 'RIDER' ? '#FFFFFF' : theme.textSecondary }]}>Rider</Text>
               </TouchableOpacity>
             </View>
           ) : currentUser?.role === 'DRIVER' && driverVerificationStatus === 'APPROVED' ? (
-            <View style={styles.modeSwitchPill}>
+            <View style={[styles.modeSwitchPill, { backgroundColor: theme.surfaceElevated, borderColor: theme.border }]}>
               <TouchableOpacity
-                style={[styles.modePillBtn, appMode === 'DRIVER' && styles.modePillBtnActive]}
+                style={[styles.modePillBtn, appMode === 'DRIVER' && { backgroundColor: theme.primary }]}
                 onPress={() => setAppMode('DRIVER')}
               >
-                <Text style={[styles.modePillText, appMode === 'DRIVER' && styles.modePillTextActive]}>Driver</Text>
+                <Text style={[styles.modePillText, { color: appMode === 'DRIVER' ? '#FFFFFF' : theme.textSecondary }]}>Driver</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modePillBtn, appMode === 'RIDER' && styles.modePillBtnActive]}
+                style={[styles.modePillBtn, appMode === 'RIDER' && { backgroundColor: theme.primary }]}
                 onPress={() => setAppMode('RIDER')}
               >
-                <Text style={[styles.modePillText, appMode === 'RIDER' && styles.modePillTextActive]}>Rider</Text>
+                <Text style={[styles.modePillText, { color: appMode === 'RIDER' ? '#FFFFFF' : theme.textSecondary }]}>Rider</Text>
               </TouchableOpacity>
             </View>
-          ) : (
-            <View style={styles.pilotBadge}>
-              <Ionicons name="location-sharp" size={12} color="#10B981" />
-              <Text style={styles.pilotBadgeText}>West Pokot Pilot</Text>
-            </View>
-          )}
+          ) : null}
 
-          {/* Wallet & Safety Actions */}
+          {/* Right: Actions (SOS + Profile Avatar + Logout) */}
           <View style={styles.headerActions}>
-            <TouchableOpacity onPress={triggerSOS} style={styles.sosShieldBtn}>
-              <Ionicons name="shield" size={14} color="#EF4444" />
-              <Text style={styles.sosShieldText}>SOS</Text>
+            <TouchableOpacity onPress={triggerSOS} style={[styles.sosShieldBtn, { backgroundColor: theme.sosRedSurface, borderColor: theme.sosRed }]} activeOpacity={0.7}>
+              <Ionicons name="shield" size={13} color={theme.sosRed} />
+              <Text style={[styles.sosShieldText, { color: theme.sosRed }]}>SOS</Text>
             </TouchableOpacity>
+
             <TouchableOpacity
-              style={styles.walletBadge}
+              style={[styles.walletBadge, { backgroundColor: theme.badgeBg, borderColor: theme.badgeBorder }]}
               onPress={() => setShowAuthModal(true)}
+              activeOpacity={0.7}
             >
-              <Ionicons name="person-circle" size={14} color="#10B981" style={{ marginRight: 4 }} />
-              <Text style={styles.walletBadgeText}>
+              <Ionicons name="person-circle" size={15} color={theme.primary} style={{ marginRight: 3 }} />
+              <Text style={[styles.walletBadgeText, { color: theme.primary }]} numberOfLines={1}>
                 {currentUser?.fullName ? currentUser.fullName.split(' ')[0] : 'Sign In'}
               </Text>
             </TouchableOpacity>
+
             {currentUser && (
               <TouchableOpacity
-                style={styles.logoutHeaderBtn}
+                style={[styles.logoutHeaderBtn, { backgroundColor: theme.sosRedSurface, borderColor: theme.border }]}
                 onPress={() => {
                   Alert.alert('Sign Out', `Sign out from ${currentUser.fullName}?`, [
                     { text: 'Cancel', style: 'cancel' },
@@ -240,7 +302,7 @@ export default function HomeScreen() {
                 }}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Ionicons name="log-out-outline" size={15} color="#EF4444" />
+                <Ionicons name="log-out-outline" size={15} color={theme.sosRed} />
               </TouchableOpacity>
             )}
           </View>
@@ -547,11 +609,22 @@ export default function HomeScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Confirm Ride Button */}
-                <TouchableOpacity style={styles.confirmRideButton} onPress={requestRide}>
-                  <Text style={styles.confirmRideButtonText}>
-                    Choose {categories.find((c) => c.id === selectedCategory)?.name} • KES {fareEstimate.totalFare}
-                  </Text>
+                {/* Confirm Ride Button with Anti-Double-Action Loading State */}
+                <TouchableOpacity
+                  style={[styles.confirmRideButton, isSubmittingRide && { opacity: 0.7 }]}
+                  onPress={requestRide}
+                  disabled={isSubmittingRide}
+                >
+                  {isSubmittingRide ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                      <ActivityIndicator size="small" color="#070A0F" />
+                      <Text style={styles.confirmRideButtonText}>Confirming Ride...</Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.confirmRideButtonText}>
+                      Choose {categories.find((c) => c.id === selectedCategory)?.name} • KES {fareEstimate.totalFare}
+                    </Text>
+                  )}
                 </TouchableOpacity>
               </View>
             ) : (
@@ -891,17 +964,24 @@ export default function HomeScreen() {
             {/* Quick Metrics Bar */}
             <View style={styles.adminMetricsRow}>
               <View style={styles.adminMetricCard}>
-                <Text style={styles.adminMetricVal}>
-                  {adminDrivers.filter((d) => d.status === 'PENDING').length}
+                <Text style={[styles.adminMetricVal, { color: '#10B981' }]}>
+                  {adminLiveFleet.length}
                 </Text>
-                <Text style={styles.adminMetricLabel}>Pending Drivers</Text>
+                <Text style={styles.adminMetricLabel}>Online Fleet</Text>
+              </View>
+              <View style={styles.adminMetricDivider} />
+              <View style={styles.adminMetricCard}>
+                <Text style={[styles.adminMetricVal, { color: '#38BDF8' }]}>
+                  {adminActiveTrips.length}
+                </Text>
+                <Text style={styles.adminMetricLabel}>Active Trips</Text>
               </View>
               <View style={styles.adminMetricDivider} />
               <View style={styles.adminMetricCard}>
                 <Text style={styles.adminMetricVal}>
-                  {adminRiders.filter((r) => r.status === 'PENDING_KYC').length}
+                  {adminDrivers.filter((d) => d.status === 'PENDING').length}
                 </Text>
-                <Text style={styles.adminMetricLabel}>Pending KYC</Text>
+                <Text style={styles.adminMetricLabel}>Pending Drivers</Text>
               </View>
               <View style={styles.adminMetricDivider} />
               <View style={styles.adminMetricCard}>
@@ -912,8 +992,25 @@ export default function HomeScreen() {
               </View>
             </View>
 
-            {/* Sub-Tabs: DRIVERS | RIDERS | TRANSACTIONS */}
-            <View style={styles.adminSubTabRow}>
+            {/* Sub-Tabs: LIVE_OPS | DRIVERS | RIDERS | TRANSACTIONS */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.adminSubTabRow}>
+              <TouchableOpacity
+                style={[styles.adminSubTabBtn, adminSubTab === 'LIVE_OPS' && styles.adminSubTabBtnActive]}
+                onPress={() => {
+                  setAdminSubTab('LIVE_OPS');
+                  refreshAdminLiveState();
+                }}
+              >
+                <Ionicons
+                  name="radio"
+                  size={15}
+                  color={adminSubTab === 'LIVE_OPS' ? '#070A0F' : '#10B981'}
+                />
+                <Text style={[styles.adminSubTabText, adminSubTab === 'LIVE_OPS' && styles.adminSubTabTextActive]}>
+                  Live Ops ({adminActiveTrips.length + adminLiveFleet.length})
+                </Text>
+              </TouchableOpacity>
+
               <TouchableOpacity
                 style={[styles.adminSubTabBtn, adminSubTab === 'DRIVERS' && styles.adminSubTabBtnActive]}
                 onPress={() => setAdminSubTab('DRIVERS')}
@@ -955,7 +1052,148 @@ export default function HomeScreen() {
                   M-Pesa ({adminTransactions.length})
                 </Text>
               </TouchableOpacity>
-            </View>
+            </ScrollView>
+
+            {/* TAB CONTENT: LIVE_OPS (REAL-TIME ACTIVE TRIPS & CONNECTED FLEET) */}
+            {adminSubTab === 'LIVE_OPS' && (
+              <View style={styles.adminListContainer}>
+                {/* Header with quick refresh */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+                  <Text style={styles.adminSectionHeader}>
+                    REAL-TIME ACTIVE TRIPS ({adminActiveTrips.length})
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => refreshAdminLiveState()}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, backgroundColor: 'rgba(16, 185, 129, 0.15)', borderRadius: 8 }}
+                  >
+                    <Ionicons name="refresh" size={12} color="#10B981" />
+                    <Text style={{ color: '#10B981', fontSize: 11, fontWeight: '800' }}>Sync Desk</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {adminActiveTrips.length === 0 ? (
+                  <View style={[styles.adminCard, { paddingVertical: 20, alignItems: 'center', gap: 6 }]}>
+                    <Ionicons name="navigate-circle-outline" size={32} color="#64748B" />
+                    <Text style={{ color: '#94A3B8', fontSize: 13, fontWeight: '700', textAlign: 'center' }}>
+                      No trips currently active
+                    </Text>
+                    <Text style={{ color: '#64748B', fontSize: 11, textAlign: 'center', maxWidth: 280 }}>
+                      When a passenger books on any device, the dispatching trip will appear here instantly.
+                    </Text>
+                  </View>
+                ) : (
+                  adminActiveTrips.map((trip) => {
+                    const statusColor =
+                      trip.status === 'IN_TRIP' ? '#10B981' :
+                      trip.status === 'DRIVER_ARRIVED' ? '#38BDF8' :
+                      trip.status === 'DRIVER_ASSIGNED' ? '#F59E0B' : '#E2E8F0';
+                    return (
+                      <View key={trip.id} style={styles.adminCard}>
+                        <View style={styles.adminCardTop}>
+                          <View style={[styles.adminCardAvatar, { backgroundColor: 'rgba(56, 189, 248, 0.15)' }]}>
+                            <Ionicons name="speedometer" size={20} color="#38BDF8" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <View style={styles.adminNameRow}>
+                              <Text style={styles.adminCardTitle}>Trip #{trip.id.slice(0, 8)}</Text>
+                              <View style={[styles.adminStatusBadge, { backgroundColor: `${statusColor}22` }]}>
+                                <Text style={[styles.adminStatusText, { color: statusColor }]}>
+                                  {trip.status.replace('_', ' ')}
+                                </Text>
+                              </View>
+                            </View>
+                            <Text style={styles.adminCardSub}>
+                              Passenger: {trip.rider?.name || 'Passenger'} ({trip.rider?.phone || 'N/A'})
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={{ backgroundColor: 'rgba(255, 255, 255, 0.03)', borderRadius: 8, padding: 10, gap: 6, marginVertical: 6 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="radio-button-on" size={13} color="#10B981" />
+                            <Text style={{ color: '#E2E8F0', fontSize: 12, fontWeight: '600', flex: 1 }} numberOfLines={1}>
+                              Pickup: {trip.pickup?.placeName || trip.pickup?.address || 'Pickup'}
+                            </Text>
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Ionicons name="location" size={13} color="#EF4444" />
+                            <Text style={{ color: '#E2E8F0', fontSize: 12, fontWeight: '600', flex: 1 }} numberOfLines={1}>
+                              Dropoff: {trip.destination?.placeName || trip.destination?.address || 'Destination'}
+                            </Text>
+                          </View>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4, borderTopWidth: 1, borderTopColor: 'rgba(255, 255, 255, 0.06)', paddingTop: 6 }}>
+                            <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                              Fare: <Text style={{ color: '#10B981', fontWeight: '800' }}>KES {trip.fare?.totalFare || (trip as any).fare?.amount || 0}</Text>
+                            </Text>
+                            {trip.ridePin && (
+                              <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                                PIN: <Text style={{ color: '#F59E0B', fontWeight: '800', letterSpacing: 1 }}>{trip.ridePin}</Text>
+                              </Text>
+                            )}
+                            <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                              Driver: <Text style={{ color: '#38BDF8', fontWeight: '700' }}>{trip.driver?.name || 'Searching...'}</Text>
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+
+                {/* Section 2: Online Connected Fleet */}
+                <Text style={[styles.adminSectionHeader, { marginTop: 14 }]}>
+                  CONNECTED FLEET TELEMETRY ({adminLiveFleet.length} ONLINE)
+                </Text>
+
+                {adminLiveFleet.length === 0 ? (
+                  <View style={[styles.adminCard, { paddingVertical: 20, alignItems: 'center', gap: 6 }]}>
+                    <Ionicons name="bicycle-outline" size={32} color="#64748B" />
+                    <Text style={{ color: '#94A3B8', fontSize: 13, fontWeight: '700', textAlign: 'center' }}>
+                      No drivers currently transmitting
+                    </Text>
+                    <Text style={{ color: '#64748B', fontSize: 11, textAlign: 'center', maxWidth: 280 }}>
+                      When a driver opens the app and toggles 'Online', their live coordinates and status will appear here.
+                    </Text>
+                  </View>
+                ) : (
+                  adminLiveFleet.map((fleetDriver) => (
+                    <View key={fleetDriver.driverId || fleetDriver.id} style={styles.adminCard}>
+                      <View style={styles.adminCardTop}>
+                        <View style={[styles.adminCardAvatar, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                          <Ionicons name="bicycle" size={20} color="#10B981" />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <View style={styles.adminNameRow}>
+                            <Text style={styles.adminCardTitle}>{fleetDriver.name || 'Boda Operator'}</Text>
+                            <View style={[styles.adminStatusBadge, styles.statusBadgeApproved]}>
+                              <Text style={[styles.adminStatusText, styles.statusTextApproved]}>
+                                {fleetDriver.status || 'ONLINE'}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={styles.adminCardSub}>
+                            {fleetDriver.phone || '+254...'} • {fleetDriver.plate || 'KMDK 234P'} ({fleetDriver.vehicleModel || 'Boxer 150X'})
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(255, 255, 255, 0.03)', borderRadius: 8, padding: 8, marginTop: 6 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Ionicons name="navigate" size={13} color="#10B981" />
+                          <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+                            GPS: <Text style={{ color: '#E2E8F0', fontWeight: '700' }}>{fleetDriver.location?.latitude?.toFixed(4) || '1.2405'}, {fleetDriver.location?.longitude?.toFixed(4) || '35.1135'}</Text>
+                          </Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' }} />
+                          <Text style={{ color: '#10B981', fontSize: 10, fontWeight: '800' }}>Live Telemetry</Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </View>
+            )}
 
             {/* TAB CONTENT: DRIVERS */}
             {adminSubTab === 'DRIVERS' && (
@@ -1329,7 +1567,7 @@ export default function HomeScreen() {
           {/* Header */}
           <View style={styles.searchModalHeader}>
             <TouchableOpacity onPress={() => setShowSearchModal(false)} style={styles.searchBackBtn}>
-              <Ionicons name="arrow-back" size={24} color="#F8FAFC" />
+              <Ionicons name="arrow-back" size={24} color={theme.textPrimary} />
             </TouchableOpacity>
             <Text style={styles.searchModalTitle}>Plan your ride</Text>
             <View style={{ width: 40 }} />
@@ -1345,18 +1583,18 @@ export default function HomeScreen() {
             <View style={styles.searchConnectorLine} />
 
             <View style={styles.destinationInputRow}>
-              <View style={[styles.searchDot, { backgroundColor: '#F8FAFC' }]} />
+              <View style={[styles.searchDot, { backgroundColor: theme.textPrimary }]} />
               <TextInput
                 style={styles.destinationTextInput}
                 placeholder="Where to?"
-                placeholderTextColor="#64748B"
+                placeholderTextColor={theme.textMuted}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 autoFocus
               />
               {searchQuery ? (
                 <TouchableOpacity onPress={() => setSearchQuery('')}>
-                  <Ionicons name="close-circle" size={18} color="#94A3B8" />
+                  <Ionicons name="close-circle" size={18} color={theme.textSecondary} />
                 </TouchableOpacity>
               ) : null}
             </View>
@@ -1416,28 +1654,198 @@ export default function HomeScreen() {
               </View>
             )}
 
-            <Text style={styles.searchSectionLabel}>POPULAR NAIROBI DESTINATIONS</Text>
-            {filteredDestinations.map((dest) => (
-              <TouchableOpacity
-                key={dest.name}
-                style={styles.searchResultItem}
-                onPress={() => handleSelectDestination(dest)}
-              >
-                <View style={styles.searchResultIcon}>
-                  <Ionicons name={dest.icon as any} size={20} color="#10B981" />
+            {/* LIVE SERPLY SEARCH RESULTS / STATES */}
+            {isSearchingPlaces ? (
+              <View style={styles.searchStatusBox}>
+                <ActivityIndicator size="large" color="#10B981" />
+                <Text style={styles.searchStatusTitle}>Searching live Google Maps...</Text>
+                <Text style={styles.searchStatusSubtitle}>Fetching real places and coordinates from Serply</Text>
+              </View>
+            ) : searchError ? (
+              <View style={styles.searchStatusBox}>
+                <Ionicons name="alert-circle" size={36} color="#EF4444" />
+                <Text style={styles.searchStatusTitle}>Search Unavailable</Text>
+                <Text style={styles.searchStatusSubtitle}>{searchError}</Text>
+                <TouchableOpacity
+                  style={styles.searchRetryBtn}
+                  onPress={async () => {
+                    if (!searchQuery.trim()) return;
+                    setIsSearchingPlaces(true);
+                    setSearchError(null);
+                    try {
+                      const res = await searchPlacesLive(searchQuery.trim());
+                      setPlacesResults(res.places);
+                    } catch (e: any) {
+                      setSearchError(e.message || 'Retry failed');
+                    } finally {
+                      setIsSearchingPlaces(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.searchRetryBtnText}>Retry Search</Text>
+                </TouchableOpacity>
+              </View>
+            ) : searchQuery && placesResults.length === 0 ? (
+              <View style={styles.searchStatusBox}>
+                <Ionicons name="search-outline" size={36} color="#64748B" />
+                <Text style={styles.searchStatusTitle}>No places found for your search.</Text>
+                <Text style={styles.searchStatusSubtitle}>
+                  Try searching with more specific keywords or different locations across Kenya.
+                </Text>
+              </View>
+            ) : placesResults.length > 0 ? (
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <Text style={styles.searchSectionLabel}>PLACES FOUND ({placesResults.length})</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Ionicons name="globe-outline" size={12} color="#10B981" />
+                    <Text style={{ color: '#10B981', fontSize: 11, fontWeight: '700' }}>Live Google Maps</Text>
+                  </View>
                 </View>
-                <View style={styles.searchResultMeta}>
-                  <Text style={styles.searchResultName}>{dest.name}</Text>
-                  <Text style={styles.searchResultAddress} numberOfLines={1}>
-                    {dest.address}
-                  </Text>
-                </View>
-                <View style={styles.searchResultDistance}>
-                  <Text style={styles.searchResultDistText}>{dest.dist}</Text>
-                  <Text style={styles.searchResultEtaText}>{dest.eta}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
+
+                {placesResults.map((place) => {
+                  const distanceKm = userLocation
+                    ? calculateHaversineDistance(
+                        userLocation.latitude,
+                        userLocation.longitude,
+                        place.latitude,
+                        place.longitude
+                      ).toFixed(1)
+                    : null;
+
+                  const firstHoursEntry = place.openingHours
+                    ? Object.entries(place.openingHours)[0]
+                    : null;
+
+                  return (
+                    <View key={place.id} style={styles.placeCardContainer}>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => handleSelectPlace(place)}
+                        style={styles.placeCardHeader}
+                      >
+                        {place.thumbnail ? (
+                          <Image
+                            source={{ uri: place.thumbnail }}
+                            style={styles.placeCardThumb}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={styles.placeCardThumbPlaceholder}>
+                            <Ionicons name="location" size={26} color="#10B981" />
+                          </View>
+                        )}
+
+                        <View style={styles.placeCardMeta}>
+                          <Text style={styles.placeCardName} numberOfLines={1}>
+                            {place.name}
+                          </Text>
+                          <Text style={styles.placeCardAddress} numberOfLines={2}>
+                            {place.address || place.district || 'Address unavailable'}
+                          </Text>
+
+                          <View style={styles.placeCardBadgeRow}>
+                            {place.rating !== null ? (
+                              <View style={styles.placeRatingBadge}>
+                                <Ionicons name="star" size={12} color="#F59E0B" />
+                                <Text style={styles.placeRatingText}>
+                                  {place.rating.toFixed(1)}
+                                  {place.reviewCount ? ` (${place.reviewCount})` : ''}
+                                </Text>
+                              </View>
+                            ) : null}
+
+                            {place.categories.slice(0, 2).map((cat, idx) => (
+                              <View key={idx} style={styles.placeCategoryBadge}>
+                                <Text style={styles.placeCategoryText}>{cat}</Text>
+                              </View>
+                            ))}
+
+                            {distanceKm !== null ? (
+                              <View style={[styles.placeCategoryBadge, { backgroundColor: 'rgba(16, 185, 129, 0.12)' }]}>
+                                <Text style={[styles.placeCategoryText, { color: '#10B981' }]}>
+                                  {distanceKm} km away
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+
+                          {firstHoursEntry ? (
+                            <Text style={styles.placeHoursText} numberOfLines={1}>
+                              🕒 {firstHoursEntry[0]}: {firstHoursEntry[1]}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </TouchableOpacity>
+
+                      {/* Action Buttons */}
+                      <View style={styles.placeCardActions}>
+                        <TouchableOpacity
+                          style={styles.placeSelectBtn}
+                          onPress={() => handleSelectPlace(place)}
+                        >
+                          <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                          <Text style={styles.placeSelectBtnText}>Set as Destination</Text>
+                        </TouchableOpacity>
+
+                        {place.googleMapsUrl ? (
+                          <TouchableOpacity
+                            style={styles.placeActionIconBtn}
+                            onPress={() => Linking.openURL(place.googleMapsUrl!)}
+                          >
+                            <Ionicons name="map-outline" size={18} color={theme.textPrimary} />
+                          </TouchableOpacity>
+                        ) : null}
+
+                        {place.phoneE164 || place.phone ? (
+                          <TouchableOpacity
+                            style={styles.placeActionIconBtn}
+                            onPress={() => Linking.openURL(`tel:${place.phoneE164 || place.phone}`)}
+                          >
+                            <Ionicons name="call-outline" size={18} color="#10B981" />
+                          </TouchableOpacity>
+                        ) : null}
+
+                        {place.website ? (
+                          <TouchableOpacity
+                            style={styles.placeActionIconBtn}
+                            onPress={() => Linking.openURL(place.website!)}
+                          >
+                            <Ionicons name="globe-outline" size={18} color={theme.textPrimary} />
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <View>
+                <Text style={styles.searchSectionLabel}>POPULAR SEARCHES</Text>
+                {[
+                  { query: 'Coffee shops in Nairobi', icon: 'cafe-outline' },
+                  { query: 'Hospitals in Nairobi', icon: 'medkit-outline' },
+                  { query: 'Restaurants in Westlands Nairobi', icon: 'restaurant-outline' },
+                  { query: 'Banks in CBD Nairobi', icon: 'business-outline' },
+                  { query: 'Hotels in Mombasa', icon: 'bed-outline' },
+                ].map((s) => (
+                  <TouchableOpacity
+                    key={s.query}
+                    style={styles.searchResultItem}
+                    onPress={() => setSearchQuery(s.query)}
+                  >
+                    <View style={styles.searchResultIcon}>
+                      <Ionicons name={s.icon as any} size={20} color="#10B981" />
+                    </View>
+                    <View style={styles.searchResultMeta}>
+                      <Text style={styles.searchResultName}>{s.query}</Text>
+                      <Text style={styles.searchResultAddress}>Tap to search real Google Maps places</Text>
+                    </View>
+                    <Ionicons name="search" size={16} color="#64748B" />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </ScrollView>
         </View>
       </Modal>
@@ -2113,1441 +2521,3 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#070A0F' },
-
-  // Top Header
-  topHeader: {
-    backgroundColor: '#0E141F',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    zIndex: 10,
-  },
-  brandRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  brandLogo: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' },
-  brandTitle: { fontSize: 20, fontWeight: '900', color: '#F8FAFC', letterSpacing: -0.5 },
-
-  modeSwitchPill: {
-    flexDirection: 'row',
-    backgroundColor: '#1E293B',
-    borderRadius: 20,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  modePillBtn: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 16 },
-  modePillBtnActive: { backgroundColor: '#10B981' },
-  modePillText: { fontSize: 11, fontWeight: '700', color: '#94A3B8' },
-  modePillTextActive: { color: '#070A0F' },
-
-  pilotBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.35)',
-  },
-  pilotBadgeText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#10B981',
-    letterSpacing: 0.2,
-  },
-
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sosShieldBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.4)',
-  },
-  sosShieldText: { color: '#EF4444', fontSize: 11, fontWeight: '800' },
-  walletBadge: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  walletBadgeText: { color: '#10B981', fontSize: 11, fontWeight: '800' },
-  logoutHeaderBtn: {
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    paddingHorizontal: 7,
-    paddingVertical: 5,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Map Viewport
-  mapViewport: { height: Dimensions.get('window').height * 0.42, backgroundColor: '#070A0F', overflow: 'hidden' },
-  mapCanvas: { flex: 1, backgroundColor: '#0A0F1D', position: 'relative' },
-  highwayLine: {
-    position: 'absolute',
-    height: 8,
-    backgroundColor: '#161F33',
-    borderColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-  },
-  streetLabel: {
-    position: 'absolute',
-    color: '#334155',
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 2,
-  },
-  floatingEtaPill: {
-    position: 'absolute',
-    top: 14,
-    left: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E141F',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    elevation: 8,
-  },
-  floatingEtaText: { color: '#F8FAFC', fontSize: 11, fontWeight: '700' },
-  recenterMapBtn: {
-    position: 'absolute',
-    top: 14,
-    right: 16,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0E141F',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    elevation: 8,
-  },
-
-  // Map Markers
-  mapMarker: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
-  userBeaconMarker: { left: '46%', top: '44%' },
-  userBeaconPulse: {
-    position: 'absolute',
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-  },
-  userBeaconDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#10B981', borderWidth: 2, borderColor: '#FFF' },
-  beaconCallout: {
-    position: 'absolute',
-    top: 20,
-    backgroundColor: '#0E141F',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  beaconCalloutText: { color: '#F8FAFC', fontSize: 10, fontWeight: '700' },
-
-  destinationMarker: { left: '72%', top: '28%' },
-  destPinOuter: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#F59E0B', alignItems: 'center', justifyContent: 'center' },
-
-  driverMapMarker: { zIndex: 5 },
-  driverMarkerBubble: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#0E141F',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#10B981',
-  },
-  driverMarkerSpeed: { color: '#10B981', fontSize: 10, fontWeight: '800' },
-
-  idleDriverMarker: { zIndex: 4 },
-  idleDriverPill: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: '#1E293B',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-  },
-  routePolylineGlow: {
-    position: 'absolute',
-    top: '32%',
-    left: '48%',
-    width: '28%',
-    height: 3,
-    backgroundColor: '#10B981',
-    transform: [{ rotate: '-25deg' }],
-  },
-
-  // Bottom Sheet
-  bottomSheet: { flex: 1, backgroundColor: '#070A0F' },
-  bottomSheetContent: { padding: 16 },
-
-  // Idle Screen
-  serviceTilesRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  serviceTile: {
-    flex: 1,
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  serviceTileActive: { borderColor: '#10B981' },
-  serviceTileIcon: { marginBottom: 8 },
-  serviceTileTitle: { color: '#F8FAFC', fontSize: 15, fontWeight: '800' },
-  serviceTileSub: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-
-  whereToSearchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    marginBottom: 20,
-  },
-  whereToPlaceholder: { flex: 1, color: '#94A3B8', fontSize: 16, fontWeight: '600' },
-  nowBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
-  },
-  nowBadgeText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-
-  sectionHeader: { color: '#94A3B8', fontSize: 12, fontWeight: '800', letterSpacing: 1, marginBottom: 12, textTransform: 'uppercase' },
-  placesList: { gap: 10 },
-  placeItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E141F',
-    padding: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  placeIconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  placeInfo: { flex: 1 },
-  placeName: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  placeAddress: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  placeEta: { color: '#10B981', fontSize: 12, fontWeight: '700' },
-
-  // Vehicle Selection Sheet
-  idleSearchSheet: { gap: 14 },
-  selectionSheet: { gap: 14 },
-  destinationSelectedBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#10B981',
-  },
-  destSelectedTitle: { color: '#F8FAFC', fontSize: 15, fontWeight: '800' },
-  destSelectedAddress: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-  changeDestBtn: { padding: 4 },
-
-  categoryList: { gap: 10 },
-  categoryCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  categoryCardSelected: { borderColor: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.06)' },
-  categoryIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#1E293B',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  categoryIconCircleSelected: { backgroundColor: 'rgba(16, 185, 129, 0.2)' },
-  categoryInfo: { flex: 1 },
-  categoryName: { color: '#F8FAFC', fontSize: 15, fontWeight: '800' },
-  capacityBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: '#1E293B', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 8 },
-  capacityText: { color: '#94A3B8', fontSize: 10, fontWeight: '700' },
-  categoryEta: { color: '#10B981', fontSize: 11, fontWeight: '700' },
-  categorySub: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  categoryPriceBox: { alignItems: 'flex-end' },
-  categoryPriceText: { color: '#F8FAFC', fontSize: 16, fontWeight: '900' },
-
-  paymentSelectorRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-  paymentMethodChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E141F',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    flex: 1,
-  },
-  paymentMethodText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700', flex: 1 },
-  promoCodeChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E141F',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
-  },
-  promoCodeText: { color: '#F59E0B', fontSize: 12, fontWeight: '700' },
-
-  confirmRideButton: {
-    backgroundColor: '#10B981',
-    borderRadius: 16,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 6,
-    elevation: 8,
-  },
-  confirmRideButtonText: { color: '#070A0F', fontSize: 16, fontWeight: '900', letterSpacing: 0.3 },
-
-  // Searching State (Radar Dispatch)
-  searchingCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 20,
-    padding: 24,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  radarWaveOuter: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  radarWaveInner: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(16, 185, 129, 0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  searchingTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '900', marginBottom: 4 },
-  searchingSubtitle: { color: '#94A3B8', fontSize: 12, textAlign: 'center', marginBottom: 16 },
-  searchingProgressBar: {
-    width: '100%',
-    height: 4,
-    backgroundColor: '#1E293B',
-    borderRadius: 2,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  searchingProgressFill: { width: '70%', height: '100%', backgroundColor: '#10B981' },
-  searchingDetailsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    marginBottom: 16,
-  },
-  searchingDetailText: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  cancelSearchBtn: {
-    width: '100%',
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.5)',
-    alignItems: 'center',
-  },
-  cancelSearchBtnText: { color: '#EF4444', fontSize: 13, fontWeight: '800' },
-
-  // Active Ride Sheet
-  activeRideSheet: { gap: 14 },
-  statusBarRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
-  statusPulseDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#10B981' },
-  statusTitle: { color: '#10B981', fontSize: 13, fontWeight: '800' },
-
-  driverProfileCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  driverAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#1E293B',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  driverMeta: { flex: 1 },
-  driverName: { color: '#F8FAFC', fontSize: 16, fontWeight: '800' },
-  driverSub: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-  ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
-  ratingText: { color: '#F59E0B', fontSize: 11, fontWeight: '700' },
-  plateBadge: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-  },
-  plateText: { color: '#F8FAFC', fontSize: 13, fontWeight: '900', letterSpacing: 1 },
-
-  // Safety PIN
-  safetyPinCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    alignItems: 'center',
-  },
-  safetyPinHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  safetyPinTitle: { color: '#10B981', fontSize: 13, fontWeight: '800' },
-  safetyPinDesc: { color: '#94A3B8', fontSize: 11, textAlign: 'center', marginBottom: 12 },
-  pinDigitsRow: { flexDirection: 'row', gap: 12 },
-  pinDigitBox: {
-    width: 46,
-    height: 52,
-    borderRadius: 12,
-    backgroundColor: '#070A0F',
-    borderWidth: 2,
-    borderColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pinDigitText: { color: '#F8FAFC', fontSize: 24, fontWeight: '900' },
-
-  routeLocationsCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  routePointRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  routeDot: { width: 10, height: 10, borderRadius: 5 },
-  routeConnectorLine: { width: 2, height: 14, backgroundColor: '#334155', marginLeft: 4, marginVertical: 2 },
-  routePointText: { color: '#F8FAFC', fontSize: 12, fontWeight: '600', flex: 1 },
-
-  tripActionsGrid: { flexDirection: 'row', gap: 8 },
-  callDriverBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: '#1E293B',
-    paddingVertical: 12,
-    borderRadius: 14,
-  },
-  callDriverText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-  messageDriverBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: '#1E293B',
-    paddingVertical: 12,
-    borderRadius: 14,
-  },
-  messageDriverText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-  shareTripBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingVertical: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  shareTripText: { color: '#10B981', fontSize: 12, fontWeight: '700' },
-  cancelTripBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    paddingVertical: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  cancelTripText: { color: '#EF4444', fontSize: 12, fontWeight: '700' },
-
-  recipientBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 8,
-  },
-  recipientBadgeText: { color: '#94A3B8', fontSize: 12 },
-
-  riderSelectorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginVertical: 8,
-  },
-  riderSelectorPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E141F',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  riderSelectorPillText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-  resetRiderBtn: { paddingVertical: 4, paddingHorizontal: 8 },
-  resetRiderBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '700' },
-
-  riderModalCard: {
-    backgroundColor: '#0E141F',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    paddingBottom: 36,
-    gap: 14,
-  },
-  riderModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  riderModalTitle: { color: '#FFFFFF', fontSize: 20, fontWeight: '900' },
-  riderOptionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#162031',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  riderOptionCardOther: {
-    backgroundColor: '#162031',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  riderOptionCardSelected: {
-    borderColor: '#10B981',
-    backgroundColor: 'rgba(16, 185, 129, 0.06)',
-  },
-  riderOptionAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  riderOptionName: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
-  riderOptionSub: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-  otherRiderInput: {
-    backgroundColor: '#070A0F',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#F8FAFC',
-    fontSize: 14,
-  },
-  presetRidersRow: { flexDirection: 'row', gap: 8 },
-  presetRiderChip: {
-    backgroundColor: '#070A0F',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  presetRiderText: { color: '#94A3B8', fontSize: 11 },
-  saveOtherRiderBtn: {
-    backgroundColor: '#10B981',
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  saveOtherRiderBtnText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-
-  simulateArrivedBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingVertical: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#10B981',
-    marginTop: 6,
-  },
-  simulateArrivedText: { color: '#10B981', fontSize: 13, fontWeight: '800' },
-
-  // Driver Mode
-  driverSheet: { gap: 14 },
-  driverEarningsCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  driverEarningsTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  earningsLabel: { color: '#94A3B8', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  earningsValue: { color: '#F8FAFC', fontSize: 24, fontWeight: '900', marginTop: 2 },
-  tripsCountBadge: { backgroundColor: '#1E293B', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, alignItems: 'center' },
-  tripsCountNumber: { color: '#10B981', fontSize: 16, fontWeight: '900' },
-  tripsCountLabel: { color: '#94A3B8', fontSize: 10, fontWeight: '600' },
-
-  driverStatsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderColor: 'rgba(255, 255, 255, 0.06)' },
-  statCol: { alignItems: 'center' },
-  statColVal: { color: '#F8FAFC', fontSize: 13, fontWeight: '800' },
-  statColLabel: { color: '#94A3B8', fontSize: 10, marginTop: 2 },
-  statDivider: { width: 1, height: 24, backgroundColor: 'rgba(255, 255, 255, 0.08)' },
-
-  goButtonContainer: { alignItems: 'center', marginVertical: 10 },
-  giantGoButton: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 15,
-  },
-  giantGoOnline: { backgroundColor: '#10B981', borderWidth: 4, borderColor: 'rgba(16, 185, 129, 0.4)' },
-  giantGoOffline: { backgroundColor: '#1E293B', borderWidth: 4, borderColor: '#334155' },
-  giantGoText: { color: '#F8FAFC', fontSize: 28, fontWeight: '900', letterSpacing: 1 },
-  giantGoSubtext: { color: 'rgba(255, 255, 255, 0.8)', fontSize: 10, fontWeight: '700', marginTop: 2 },
-
-  incomingOfferCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 18,
-    padding: 18,
-    borderWidth: 2,
-    borderColor: '#F59E0B',
-    gap: 12,
-  },
-  incomingOfferHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  countdownBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(245, 158, 11, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  countdownText: { color: '#F59E0B', fontSize: 12, fontWeight: '800' },
-  incomingOfferPrice: { color: '#10B981', fontSize: 20, fontWeight: '900' },
-  incomingRiderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  riderAvatarCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#1E293B', alignItems: 'center', justifyContent: 'center' },
-  incomingRiderName: { color: '#F8FAFC', fontSize: 14, fontWeight: '800' },
-  incomingRiderRating: { color: '#F59E0B', fontSize: 11, fontWeight: '700' },
-  incomingRouteBox: { backgroundColor: '#070A0F', padding: 12, borderRadius: 12, gap: 6 },
-  incomingRouteText: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  offerButtonsRow: { flexDirection: 'row', gap: 10 },
-  declineOfferBtn: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#1E293B', alignItems: 'center' },
-  declineOfferText: { color: '#94A3B8', fontSize: 13, fontWeight: '700' },
-  acceptOfferBtn: { flex: 2, paddingVertical: 12, borderRadius: 12, backgroundColor: '#10B981', alignItems: 'center' },
-  acceptOfferText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-
-  driverActiveTripCard: { backgroundColor: '#0E141F', borderRadius: 16, padding: 16, gap: 10, borderWidth: 1, borderColor: '#10B981' },
-  driverTripHeader: { color: '#10B981', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
-  driverPassengerText: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  driverDestinationText: { color: '#94A3B8', fontSize: 12 },
-  driverActionBtnGreen: { backgroundColor: '#10B981', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 6 },
-  driverActionBtnBlue: { backgroundColor: '#3B82F6', borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 6 },
-  driverActionBtnText: { color: '#F8FAFC', fontSize: 14, fontWeight: '800' },
-  pinVerifySection: { gap: 8, marginTop: 4 },
-  pinVerifyPrompt: { color: '#F8FAFC', fontSize: 12, fontWeight: '600' },
-  pinVerifyInput: {
-    backgroundColor: '#070A0F',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 10,
-    color: '#F8FAFC',
-    fontSize: 20,
-    fontWeight: '900',
-    textAlign: 'center',
-    paddingVertical: 10,
-  },
-
-  // Modals
-  searchModalContainer: { flex: 1, backgroundColor: '#070A0F' },
-  searchModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 14 },
-  searchBackBtn: { padding: 4 },
-  searchModalTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '800' },
-  searchInputsContainer: {
-    backgroundColor: '#0E141F',
-    marginHorizontal: 16,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  pickupInputRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  searchDot: { width: 10, height: 10, borderRadius: 5 },
-  pickupInputStatic: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
-  searchConnectorLine: { width: 2, height: 18, backgroundColor: '#334155', marginLeft: 4, marginVertical: 2 },
-  destinationInputRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  destinationTextInput: { flex: 1, color: '#F8FAFC', fontSize: 15, fontWeight: '700' },
-  searchResultsList: { flex: 1, paddingHorizontal: 16, marginTop: 14 },
-  searchSectionLabel: { color: '#64748B', fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 12 },
-  searchResultItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  searchResultIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  searchResultMeta: { flex: 1 },
-  searchResultName: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  searchResultAddress: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  searchResultDistance: { alignItems: 'flex-end' },
-  searchResultDistText: { color: '#10B981', fontSize: 12, fontWeight: '700' },
-  searchResultEtaText: { color: '#64748B', fontSize: 11 },
-
-  // Chat Modal
-  chatModalContainer: { flex: 1, backgroundColor: '#070A0F' },
-  chatModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 14,
-    backgroundColor: '#0E141F',
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  chatDriverName: { color: '#F8FAFC', fontSize: 16, fontWeight: '800' },
-  chatDriverSub: { color: '#94A3B8', fontSize: 11, marginTop: 1 },
-  chatCallBtn: { padding: 8, backgroundColor: 'rgba(16, 185, 129, 0.15)', borderRadius: 20 },
-  quickRepliesRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#0E141F' },
-  quickReplyChip: { backgroundColor: '#1E293B', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
-  quickReplyText: { color: '#94A3B8', fontSize: 11, fontWeight: '600' },
-  chatMessagesScroll: { flex: 1 },
-  chatBubble: { maxWidth: '80%', padding: 12, borderRadius: 14 },
-  chatBubbleRider: { alignSelf: 'flex-end', backgroundColor: '#10B981' },
-  chatBubbleDriver: { alignSelf: 'flex-start', backgroundColor: '#1E293B' },
-  chatText: { color: '#F8FAFC', fontSize: 13, fontWeight: '600' },
-  chatTime: { color: 'rgba(255, 255, 255, 0.6)', fontSize: 9, marginTop: 4, alignSelf: 'flex-end' },
-  chatInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    backgroundColor: '#0E141F',
-    gap: 10,
-    borderTopWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  chatTextInput: {
-    flex: 1,
-    backgroundColor: '#070A0F',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    color: '#F8FAFC',
-    fontSize: 13,
-  },
-  chatSendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#10B981',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Payment Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.75)', justifyContent: 'center', padding: 20 },
-  modalOverlayDark: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.85)', justifyContent: 'center', padding: 20 },
-  paymentModalCard: { backgroundColor: '#0E141F', borderRadius: 20, padding: 20, gap: 12, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
-  paymentModalTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '800', marginBottom: 4 },
-  pmOptionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#070A0F',
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  pmOptionRowSelected: { borderColor: '#10B981' },
-  pmOptionTitle: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  pmOptionSub: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  closePaymentBtn: { backgroundColor: '#10B981', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginTop: 6 },
-  closePaymentBtnText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-
-  // Rating Modal
-  ratingCard: { backgroundColor: '#0E141F', borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)', gap: 12 },
-  ratingAvatarCircle: { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(16, 185, 129, 0.15)', alignItems: 'center', justifyContent: 'center' },
-  ratingModalTitle: { color: '#F8FAFC', fontSize: 16, fontWeight: '800', textAlign: 'center' },
-  ratingModalSub: { color: '#94A3B8', fontSize: 12 },
-  starsRow: { flexDirection: 'row', gap: 10, marginVertical: 6 },
-  complimentsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' },
-  complimentChip: { backgroundColor: '#1E293B', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
-  complimentChipActive: { backgroundColor: '#10B981' },
-  complimentText: { color: '#94A3B8', fontSize: 11, fontWeight: '600' },
-  complimentTextActive: { color: '#070A0F', fontWeight: '700' },
-  tipLabel: { color: '#F8FAFC', fontSize: 13, fontWeight: '700', marginTop: 4 },
-  tipButtonsRow: { flexDirection: 'row', gap: 8 },
-  tipChip: { backgroundColor: '#1E293B', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12 },
-  tipChipActive: { backgroundColor: '#10B981' },
-  tipText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-  tipTextActive: { color: '#070A0F' },
-  receiptBox: { width: '100%', backgroundColor: '#070A0F', padding: 12, borderRadius: 12, gap: 4 },
-  receiptRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  receiptLabel: { color: '#94A3B8', fontSize: 12 },
-  receiptValue: { color: '#F8FAFC', fontSize: 12, fontWeight: '600' },
-  receiptTotalLabel: { color: '#F8FAFC', fontSize: 13, fontWeight: '800' },
-  receiptTotalValue: { color: '#10B981', fontSize: 14, fontWeight: '900' },
-  submitRatingBtn: { width: '100%', backgroundColor: '#10B981', paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginTop: 6 },
-  submitRatingText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-  pdfReceiptBtn: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    paddingVertical: 12,
-    borderRadius: 14,
-    marginTop: 8,
-  },
-  pdfReceiptText: {
-    color: '#10B981',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  // ==================== ADMIN SUITE STYLES ====================
-  adminContainer: { gap: 14, paddingBottom: 24 },
-  adminBanner: {
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  adminBannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  adminBadgeIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  adminBannerTitle: { color: '#F8FAFC', fontSize: 15, fontWeight: '800' },
-  adminBannerSub: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  adminLivePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  adminLiveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' },
-  adminLiveText: { color: '#10B981', fontSize: 10, fontWeight: '900' },
-
-  adminMetricsRow: {
-    flexDirection: 'row',
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    alignItems: 'center',
-  },
-  adminMetricCard: { flex: 1, alignItems: 'center' },
-  adminMetricVal: { color: '#F8FAFC', fontSize: 16, fontWeight: '900' },
-  adminMetricLabel: { color: '#94A3B8', fontSize: 11, marginTop: 2 },
-  adminMetricDivider: { width: 1, height: 26, backgroundColor: 'rgba(255, 255, 255, 0.08)' },
-
-  adminSubTabRow: { flexDirection: 'row', gap: 6 },
-  adminSubTabBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 10,
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  adminSubTabBtnActive: { backgroundColor: '#10B981', borderColor: '#10B981' },
-  adminSubTabText: { color: '#94A3B8', fontSize: 11, fontWeight: '700' },
-  adminSubTabTextActive: { color: '#070A0F', fontWeight: '900' },
-
-  adminListContainer: { gap: 10 },
-  adminSectionHeader: { color: '#64748B', fontSize: 11, fontWeight: '800', letterSpacing: 0.5, marginTop: 4 },
-  adminCard: {
-    backgroundColor: '#0E141F',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    gap: 12,
-  },
-  adminCardTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  adminCardAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  adminNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  adminCardTitle: { color: '#F8FAFC', fontSize: 14, fontWeight: '800' },
-  adminCardSub: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-
-  adminStatusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 },
-  statusBadgeApproved: { backgroundColor: 'rgba(16, 185, 129, 0.15)' },
-  statusBadgePending: { backgroundColor: 'rgba(245, 158, 11, 0.15)' },
-  statusBadgeRejected: { backgroundColor: 'rgba(239, 68, 68, 0.15)' },
-  adminStatusText: { fontSize: 10, fontWeight: '800' },
-  statusTextApproved: { color: '#10B981' },
-  statusTextPending: { color: '#F59E0B' },
-  statusTextRejected: { color: '#EF4444' },
-
-  adminDocChecklist: {
-    backgroundColor: '#070A0F',
-    borderRadius: 12,
-    padding: 10,
-    gap: 8,
-  },
-  docCheckItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  docCheckText: { color: '#94A3B8', fontSize: 11, flex: 1, marginLeft: 8 },
-  docCheckValue: { color: '#F8FAFC', fontWeight: '700' },
-
-  adminCardActions: { flexDirection: 'row', gap: 8, marginTop: 2 },
-  adminInspectBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    backgroundColor: '#1E293B',
-    paddingVertical: 10,
-    borderRadius: 12,
-  },
-  adminInspectBtnText: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-  adminRejectBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  adminRejectBtnText: { color: '#EF4444', fontSize: 12, fontWeight: '700' },
-  adminApproveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: '#10B981',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-  },
-  adminApproveBtnText: { color: '#070A0F', fontSize: 12, fontWeight: '900' },
-
-  adminRiderMetaRow: { flexDirection: 'row', gap: 8 },
-  riderMetaChip: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#070A0F',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  riderMetaChipLabel: { color: '#64748B', fontSize: 10, fontWeight: '600' },
-  riderMetaChipVal: { color: '#F8FAFC', fontSize: 11, fontWeight: '800' },
-  adminFlagRiskBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
-  },
-  adminFlagRiskText: { color: '#F59E0B', fontSize: 12, fontWeight: '700' },
-
-  txSummaryBox: {
-    flexDirection: 'row',
-    backgroundColor: '#0E141F',
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    alignItems: 'center',
-  },
-  txSummaryCol: { flex: 1, alignItems: 'center' },
-  txSummaryLabel: { color: '#64748B', fontSize: 9, fontWeight: '800' },
-  txSummaryVal: { color: '#F8FAFC', fontSize: 13, fontWeight: '900', marginTop: 3 },
-  txSummaryDivider: { width: 1, height: 24, backgroundColor: 'rgba(255, 255, 255, 0.08)' },
-
-  txPartyRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#070A0F', padding: 8, borderRadius: 10 },
-  txPartyText: { color: '#94A3B8', fontSize: 11 },
-  txPartyBold: { color: '#F8FAFC', fontWeight: '700' },
-
-  txBreakdownBox: { backgroundColor: '#070A0F', borderRadius: 10, padding: 10, gap: 5 },
-  txBreakRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  txBreakLabel: { color: '#94A3B8', fontSize: 11 },
-  txBreakVal: { color: '#F8FAFC', fontSize: 11, fontWeight: '700' },
-
-  adminReconcileBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: '#10B981',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-  },
-  adminReconcileBtnText: { color: '#070A0F', fontSize: 12, fontWeight: '900' },
-
-  // Admin Modals
-  adminModalCard: {
-    backgroundColor: '#0E141F',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    maxHeight: '90%',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  adminModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  adminModalTitle: { color: '#F8FAFC', fontSize: 17, fontWeight: '800' },
-
-  dossierProfileHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
-  dossierAvatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dossierDriverName: { color: '#F8FAFC', fontSize: 16, fontWeight: '800' },
-  dossierDriverSub: { color: '#94A3B8', fontSize: 12, marginTop: 2 },
-  dossierVehicleBadge: { color: '#10B981', fontSize: 11, fontWeight: '700', marginTop: 2 },
-
-  docCertPreviewCard: {
-    backgroundColor: '#070A0F',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-    gap: 12,
-  },
-  docCertHeader: { borderBottomWidth: 1, borderColor: 'rgba(255, 255, 255, 0.08)', paddingBottom: 8 },
-  docCertAgency: { color: '#10B981', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
-  docCertType: { color: '#F8FAFC', fontSize: 12, fontWeight: '800', marginTop: 2 },
-
-  docCertGrid: { gap: 10 },
-  docCertItem: { backgroundColor: '#0E141F', padding: 10, borderRadius: 10 },
-  docCertLabel: { color: '#64748B', fontSize: 9, fontWeight: '800' },
-  docCertVal: { color: '#F8FAFC', fontSize: 13, fontWeight: '800', marginTop: 2 },
-  docCertStatusGreen: { color: '#10B981', fontSize: 10, fontWeight: '700', marginTop: 2 },
-
-  docCertFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderTopWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    paddingTop: 8,
-  },
-  docCertHash: { color: '#64748B', fontSize: 10, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
-
-  adminDocThumbnailCard: {
-    backgroundColor: '#070A0F',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 8,
-    alignItems: 'center',
-    marginRight: 10,
-    width: 108,
-  },
-  adminDocImage: {
-    width: 92,
-    height: 72,
-    borderRadius: 8,
-    backgroundColor: '#162031',
-  },
-  adminDocThumbLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#94A3B8',
-    marginTop: 6,
-    textAlign: 'center',
-  },
-  adminSaccoBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    borderRadius: 12,
-    padding: 12,
-    marginTop: 12,
-  },
-  adminSaccoTitle: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#F8FAFC',
-  },
-  adminSaccoSub: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 2,
-  },
-
-  modalDecisionRow: { flexDirection: 'row', gap: 10, marginTop: 18 },
-  modalRejectBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    paddingVertical: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  modalRejectText: { color: '#EF4444', fontSize: 13, fontWeight: '800' },
-  modalApproveBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#10B981',
-    paddingVertical: 14,
-    borderRadius: 14,
-  },
-  modalApproveText: { color: '#070A0F', fontSize: 13, fontWeight: '900' },
-  modalStatusBanner: {
-    width: '100%',
-    backgroundColor: '#1E293B',
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  modalStatusBannerText: { color: '#F8FAFC', fontSize: 13, fontWeight: '800' },
-
-  txAuditReceiptHeader: {
-    backgroundColor: '#070A0F',
-    borderRadius: 14,
-    padding: 14,
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: 12,
-  },
-  txAuditMpesaBrand: { color: '#10B981', fontSize: 11, fontWeight: '900', letterSpacing: 0.5 },
-  txAuditReceiptNo: { color: '#F8FAFC', fontSize: 20, fontWeight: '900', letterSpacing: 1 },
-  txAuditTimestamp: { color: '#94A3B8', fontSize: 11 },
-
-  txAuditPayloadBox: { backgroundColor: '#070A0F', borderRadius: 14, padding: 12, gap: 8, marginBottom: 14 },
-  txAuditRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  txAuditKey: { color: '#94A3B8', fontSize: 12 },
-  txAuditVal: { color: '#F8FAFC', fontSize: 12, fontWeight: '700' },
-
-  modalAuditReconcileBtn: {
-    backgroundColor: '#10B981',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 14,
-    borderRadius: 14,
-  },
-  modalAuditReconcileText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-
-  // Locked mode pill button
-  modePillBtnLocked: { opacity: 0.75 },
-  modePillTextLocked: { color: '#94A3B8', fontSize: 10 },
-
-  // Driver Status Banners
-  driverStatusBannerPending: {
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.35)',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-    gap: 10,
-  },
-  statusBannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  statusBannerIconPending: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(245, 158, 11, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusBannerTitlePending: { color: '#FCD34D', fontSize: 13, fontWeight: '800' },
-  statusPillPending: {
-    backgroundColor: 'rgba(245, 158, 11, 0.25)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  statusPillTextPending: { color: '#F59E0B', fontSize: 9, fontWeight: '900' },
-  statusBannerSub: { color: '#94A3B8', fontSize: 11, marginTop: 2, lineHeight: 15 },
-  statusBannerActionPending: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    backgroundColor: '#F59E0B',
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  statusBannerActionTextPending: { color: '#070A0F', fontSize: 11, fontWeight: '900' },
-
-  driverStatusBannerRejected: {
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.35)',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-    gap: 10,
-  },
-  statusBannerIconRejected: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusBannerTitleRejected: { color: '#FCA5A5', fontSize: 13, fontWeight: '800' },
-  statusPillRejected: {
-    backgroundColor: 'rgba(239, 68, 68, 0.25)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  statusPillTextRejected: { color: '#EF4444', fontSize: 9, fontWeight: '900' },
-  statusBannerActionRejected: {
-    backgroundColor: '#EF4444',
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  statusBannerActionTextRejected: { color: '#FFF', fontSize: 11, fontWeight: '900' },
-
-  driverStatusBannerApproved: {
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.35)',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-    gap: 10,
-  },
-  statusBannerIconApproved: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusBannerTitleApproved: { color: '#6EE7B7', fontSize: 13, fontWeight: '800' },
-  statusPillApproved: {
-    backgroundColor: 'rgba(16, 185, 129, 0.25)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  statusPillTextApproved: { color: '#10B981', fontSize: 9, fontWeight: '900' },
-  statusBannerActionApproved: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    backgroundColor: '#10B981',
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  statusBannerActionTextApproved: { color: '#070A0F', fontSize: 11, fontWeight: '900' },
-
-  driverStatusBannerApply: {
-    backgroundColor: '#0E141F',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  statusBannerIconApply: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusBannerTitleApply: { color: '#F8FAFC', fontSize: 13, fontWeight: '800' },
-  applyArrowCircle: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Driver Application Modal
-  applyModalSub: { color: '#94A3B8', fontSize: 12, marginBottom: 14, lineHeight: 16 },
-  applyInputLabel: { color: '#64748B', fontSize: 10, fontWeight: '800', marginTop: 10, marginBottom: 4, letterSpacing: 0.5 },
-  applyTextInput: {
-    backgroundColor: '#070A0F',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#F8FAFC',
-    fontSize: 13,
-    fontWeight: '700',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  applyCategoryRow: { flexDirection: 'row', gap: 6, marginTop: 4, marginBottom: 14 },
-  applyCategoryChip: {
-    flex: 1,
-    backgroundColor: '#070A0F',
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  applyCategoryChipActive: { backgroundColor: '#10B981', borderColor: '#10B981' },
-  applyCategoryChipText: { color: '#94A3B8', fontSize: 11, fontWeight: '700' },
-  applyCategoryChipTextActive: { color: '#070A0F', fontWeight: '900' },
-  applySubmitBtn: {
-    backgroundColor: '#10B981',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 14,
-    borderRadius: 14,
-    marginTop: 10,
-  },
-  applySubmitBtnText: { color: '#070A0F', fontSize: 14, fontWeight: '900' },
-});

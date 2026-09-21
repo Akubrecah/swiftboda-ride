@@ -27,6 +27,12 @@ class RedisService {
         lazyConnect: true,
         connectTimeout: 2000,
         maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+        enableOfflineQueue: false,
+      });
+
+      this.client.on('error', () => {
+        this.isConnected = false;
       });
 
       this.client.connect().then(() => {

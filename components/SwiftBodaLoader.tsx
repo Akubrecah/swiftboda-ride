@@ -1,8 +1,8 @@
-import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef } from 'react';
 import {
   Animated,
   Easing,
+  Image,
   Modal,
   StyleSheet,
   Text,
@@ -174,9 +174,13 @@ export const SwiftBodaLoader: React.FC<SwiftBodaLoaderProps> = ({
             ]}
           />
 
-          {/* Motorcycle Icon with hover suspension */}
+          {/* Authentic Motorcycle Emblem with hover suspension */}
           <Animated.View style={{ transform: [{ translateY: hoverAnim }] }}>
-            <Ionicons name="bicycle" size={iconSize} color="#10B981" />
+            <Image
+              source={require('../assets/images/splash-icon.png')}
+              style={{ width: iconSize * 1.45, height: iconSize * 1.45 }}
+              resizeMode="contain"
+            />
           </Animated.View>
         </View>
       </View>

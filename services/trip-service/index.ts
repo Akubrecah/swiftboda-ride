@@ -8,11 +8,15 @@ import { pricingService } from '../pricing-service';
 
 export interface CreateTripDTO {
   riderId: string;
+  rider?: { name: string; phone: string; rating?: number };
   pickup: GeoLocation;
   destination: GeoLocation;
   category?: VehicleCategory;
+  fare?: any;
   paymentMethod?: PaymentMethod;
   promoCode?: string;
+  ridePin?: string;
+  skipAutoAssign?: boolean;
 }
 
 export interface UpdateTripStatusDTO {
@@ -22,11 +26,13 @@ export interface UpdateTripStatusDTO {
   actorRole: 'RIDER' | 'DRIVER' | 'ADMIN' | 'SYSTEM';
   enteredPin?: string;
   cancellationReason?: string;
+  driverId?: string;
+  driver?: any;
 }
 
 // Strict Allowed State Transitions Matrix
 const ALLOWED_TRANSITIONS: Record<TripState, TripState[]> = {
-  REQUESTED: ['SEARCHING_DRIVER', 'CANCELLED'],
+  REQUESTED: ['SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'CANCELLED'],
   SEARCHING_DRIVER: ['DRIVER_ASSIGNED', 'CANCELLED', 'EXPIRED'],
   DRIVER_ASSIGNED: ['DRIVER_ARRIVED', 'CANCELLED'],
   DRIVER_ARRIVED: ['IN_TRIP', 'CANCELLED'],
@@ -43,46 +49,72 @@ export class TripService {
   public async createTrip(dto: CreateTripDTO): Promise<TripRecord> {
     const {
       riderId,
+      rider,
       pickup,
       destination,
       category = 'BODA_STANDARD',
       paymentMethod = 'MPESA',
       promoCode,
+      skipAutoAssign = true, // Keep in SEARCHING_DRIVER so connected driver devices receive live incoming offer
     } = dto;
 
-    const rider = db.users.get(riderId);
-    if (!rider) {
-      throw new Error(`Rider user record ${riderId} not found.`);
+    // Resilient Rider Verification/Upsert
+    let riderUser = db.users.get(riderId);
+    if (!riderUser) {
+      // Check if user exists by phone
+      if (rider?.phone) {
+        for (const u of db.users.values()) {
+          if (u.phone_number === rider.phone) {
+            riderUser = u;
+            break;
+          }
+        }
+      }
+      if (!riderUser) {
+        riderUser = {
+          id: riderId,
+          full_name: rider?.name || 'Grace Chemutai',
+          email: `${riderId}@swiftboda.co.ke`,
+          phone_number: rider?.phone || '+254712345001',
+          password_hash: '$2a$10$wN31rO4Z0t7mY2rQ3l1nwez5gJ5yF7VqL9K0xR2P4s8u1w3x5y7z9',
+          role: 'RIDER',
+          status: 'ACTIVE',
+          rating: rider?.rating || 4.95,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        db.users.set(riderId, riderUser);
+      }
     }
 
-    const fare = pricingService.calculateFare(pickup, destination, category, 1.0, promoCode);
-    const ridePin = Math.floor(1000 + Math.random() * 9000).toString();
+    const calculatedFare = dto.fare || pricingService.calculateFare(pickup, destination, category, 1.0, promoCode);
+    const ridePin = dto.ridePin || Math.floor(1000 + Math.random() * 9000).toString();
     const tripId = `trip-${uuidv4().substring(0, 8)}`;
 
     const newTrip: TripRecord = {
       id: tripId,
-      rider_id: riderId,
+      rider_id: riderUser.id,
       vehicle_category: category,
       status: 'SEARCHING_DRIVER',
       pickup_latitude: pickup.latitude,
       pickup_longitude: pickup.longitude,
-      pickup_address: pickup.address || 'Pickup Point, Nairobi',
+      pickup_address: pickup.address || 'Pickup Point',
       pickup_place_name: pickup.placeName || 'Current Location',
       destination_latitude: destination.latitude,
       destination_longitude: destination.longitude,
-      destination_address: destination.address || 'Destination Point, Nairobi',
+      destination_address: destination.address || 'Destination Point',
       destination_place_name: destination.placeName || 'Selected Destination',
-      base_fare: fare.baseFare,
-      distance_fare: fare.distanceFare,
-      time_fare: fare.timeFare,
-      booking_fee: fare.bookingFee,
-      surge_multiplier: fare.surgeMultiplier,
-      surge_amount: fare.surgeAmount,
-      discount_amount: fare.discountAmount,
-      total_fare: fare.totalFare,
-      currency: fare.currency,
-      estimated_distance_km: fare.estimatedDistanceKm,
-      estimated_duration_min: fare.estimatedDurationMin,
+      base_fare: calculatedFare.baseFare || 50,
+      distance_fare: calculatedFare.distanceFare || 30,
+      time_fare: calculatedFare.timeFare || 10,
+      booking_fee: calculatedFare.bookingFee || 0,
+      surge_multiplier: calculatedFare.surgeMultiplier || 1.0,
+      surge_amount: calculatedFare.surgeAmount || 0,
+      discount_amount: calculatedFare.discountAmount || 0,
+      total_fare: calculatedFare.totalFare || 90,
+      currency: calculatedFare.currency || 'KES',
+      estimated_distance_km: calculatedFare.estimatedDistanceKm || 1.9,
+      estimated_duration_min: calculatedFare.estimatedDurationMin || 6,
       payment_method: paymentMethod,
       payment_status: 'PENDING',
       ride_pin: ridePin,
@@ -94,22 +126,24 @@ export class TripService {
     db.trips.set(tripId, newTrip);
 
     // Record audit log
-    this.recordStatusHistory(tripId, undefined, 'SEARCHING_DRIVER', riderId, 'RIDER', 'Trip requested');
+    this.recordStatusHistory(tripId, undefined, 'SEARCHING_DRIVER', riderUser.id, 'RIDER', 'Trip requested');
 
-    // Attempt instant matching with Redis distributed locking
-    const match = await matchingService.matchAndLockDriver(pickup, category);
-    if (match) {
-      newTrip.driver_id = match.driverId;
-      newTrip.status = 'DRIVER_ASSIGNED';
-      newTrip.matched_at = new Date().toISOString();
+    if (!skipAutoAssign) {
+      // Attempt instant auto-matching if explicitly requested
+      const match = await matchingService.matchAndLockDriver(pickup, category);
+      if (match) {
+        newTrip.driver_id = match.driverId;
+        newTrip.status = 'DRIVER_ASSIGNED';
+        newTrip.matched_at = new Date().toISOString();
 
-      const driver = db.drivers.get(match.driverId);
-      if (driver) {
-        driver.status = 'EN_ROUTE_PICKUP';
-        db.drivers.set(match.driverId, driver);
+        const driver = db.drivers.get(match.driverId);
+        if (driver) {
+          driver.status = 'EN_ROUTE_PICKUP';
+          db.drivers.set(match.driverId, driver);
+        }
+
+        this.recordStatusHistory(tripId, 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', match.driverId, 'DRIVER', 'Driver matched and assigned');
       }
-
-      this.recordStatusHistory(tripId, 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', match.driverId, 'DRIVER', 'Driver matched and assigned');
     }
 
     db.trips.set(tripId, newTrip);
@@ -153,6 +187,21 @@ export class TripService {
         const driver = db.drivers.get(trip.driver_id);
         if (driver) {
           driver.status = 'ON_TRIP';
+          db.drivers.set(trip.driver_id, driver);
+        }
+      }
+    }
+
+    // 2.5 Precondition: Driver Assigned
+    if (nextStatus === 'DRIVER_ASSIGNED') {
+      if (dto.driverId) {
+        trip.driver_id = dto.driverId;
+      }
+      trip.matched_at = new Date().toISOString();
+      if (trip.driver_id) {
+        const driver = db.drivers.get(trip.driver_id);
+        if (driver) {
+          driver.status = 'EN_ROUTE_PICKUP';
           db.drivers.set(trip.driver_id, driver);
         }
       }

@@ -2,12 +2,14 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef } from 'react';
 import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GeoLocation, Trip, VehicleCategory } from '../shared/types';
+import { useTheme } from '../context/ThemeContext';
 
-// Conditionally require react-native-maps only on native platforms
+// Conditionally require react-native-maps and react-native-webview
 let MapView: any = null;
 let Marker: any = null;
 let Polyline: any = null;
 let UrlTile: any = null;
+let WebView: any = null;
 
 if (Platform.OS !== 'web') {
   try {
@@ -17,7 +19,14 @@ if (Platform.OS !== 'web') {
     Polyline = Maps.Polyline || (Maps.default && Maps.default.Polyline);
     UrlTile = Maps.UrlTile || (Maps.default && Maps.default.UrlTile);
   } catch (e) {
-    console.warn('react-native-maps could not be loaded, using fallback vector map.');
+    console.warn('react-native-maps could not be loaded.');
+  }
+
+  try {
+    const rnw = require('react-native-webview');
+    WebView = rnw.WebView || rnw.default || rnw;
+  } catch (e) {
+    console.warn('react-native-webview could not be loaded.');
   }
 }
 
@@ -65,27 +74,18 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
   height,
 }) => {
   const mapRef = useRef<any>(null);
+  const webViewRef = useRef<any>(null);
 
-  // Auto-fit camera when destination is chosen or updated
-  useEffect(() => {
-    if (mapRef.current && destinationLocation && userLocation) {
-      try {
-        mapRef.current.fitToCoordinates(
-          [
-            { latitude: userLocation.latitude, longitude: userLocation.longitude },
-            { latitude: destinationLocation.latitude, longitude: destinationLocation.longitude },
-            ...(simulatedDriverPos ? [{ latitude: simulatedDriverPos.latitude, longitude: simulatedDriverPos.longitude }] : []),
-          ],
-          {
-            edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
-            animated: true,
-          }
-        );
-      } catch (e) {
-        // Safe fallback
-      }
-    }
-  }, [destinationLocation, simulatedDriverPos]);
+  const { theme } = useTheme();
+
+  // Free Map Layer Selection: 'OSM_DARK' | 'OSM_STANDARD' | 'VECTOR_RADAR'
+  const [mapLayer, setMapLayer] = React.useState<'OSM_DARK' | 'OSM_STANDARD' | 'VECTOR_RADAR'>(
+    theme.isDark ? 'OSM_DARK' : 'OSM_STANDARD'
+  );
+
+  React.useEffect(() => {
+    setMapLayer(theme.isDark ? 'OSM_DARK' : 'OSM_STANDARD');
+  }, [theme.isDark]);
 
   const [currentRegion, setCurrentRegion] = React.useState({
     latitude: userLocation.latitude,
@@ -95,6 +95,9 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
   });
 
   const handleRecenter = () => {
+    if (webViewRef.current) {
+      webViewRef.current.injectJavaScript(`if(window.handleAction){window.handleAction('recenter');} true;`);
+    }
     if (mapRef.current && userLocation) {
       try {
         const targetRegion = {
@@ -112,6 +115,9 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
   };
 
   const handleZoom = (direction: 'in' | 'out') => {
+    if (webViewRef.current) {
+      webViewRef.current.injectJavaScript(`if(window.handleAction){window.handleAction('${direction === 'in' ? 'zoomIn' : 'zoomOut'}');} true;`);
+    }
     if (mapRef.current) {
       try {
         const factor = direction === 'in' ? 0.5 : 2;
@@ -130,185 +136,152 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
     }
   };
 
-  // Free Map Layer Selection: 'OSM_DARK' | 'OSM_STANDARD' | 'VECTOR_RADAR'
-  const [mapLayer, setMapLayer] = React.useState<'OSM_DARK' | 'OSM_STANDARD' | 'VECTOR_RADAR'>('OSM_DARK');
-  const [routeCoordinates, setRouteCoordinates] = React.useState<{ latitude: number; longitude: number }[]>([]);
+  // Generate interactive, self-contained Leaflet OpenStreetMap HTML
+  const leafletHtml = React.useMemo(() => {
+    const isDark = mapLayer === 'OSM_DARK';
+    const tileUrl = isDark
+      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+      : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 
-  // Fetch real free driving route geometry via Open Source Routing Machine (OSRM)
-  useEffect(() => {
-    if (!destinationLocation || !userLocation) {
-      setRouteCoordinates([]);
-      return;
+    const userLat = userLocation.latitude;
+    const userLng = userLocation.longitude;
+    const destLat = destinationLocation?.latitude;
+    const destLng = destinationLocation?.longitude;
+    const destName = destinationLocation?.placeName || 'Destination';
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body, #map { width: 100%; height: 100%; background: ${isDark ? '#090D16' : '#F1F5F9'}; overflow: hidden; }
+    .leaflet-control-attribution, .leaflet-control-zoom { display: none !important; }
+    .pulse-pin {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: #10B981;
+      border: 3px solid #FFFFFF;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.8);
     }
+    .dest-pin {
+      background: #F59E0B;
+      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid #FFFFFF;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      font-size: 15px;
+    }
+    .boda-pin {
+      background: #1E293B;
+      color: #10B981;
+      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px solid #10B981;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    var map = L.map('map', {
+      zoomControl: false,
+      attributionControl: false
+    }).setView([${userLat}, ${userLng}], 15);
 
-    let isMounted = true;
-    const fetchFreeRoute = async () => {
-      try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${userLocation.longitude},${userLocation.latitude};${destinationLocation.longitude},${destinationLocation.latitude}?overview=full&geometries=geojson`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error('OSRM route failed');
-        const data = await res.json();
-        if (data.routes && data.routes[0]?.geometry?.coordinates?.length > 0) {
-          const coords = data.routes[0].geometry.coordinates.map((c: [number, number]) => ({
-            latitude: c[1],
-            longitude: c[0],
-          }));
-          if (isMounted) setRouteCoordinates(coords);
-          return;
-        }
-      } catch (err) {
-        // Fallback to direct path with midpoint curvature
-        if (isMounted) {
-          setRouteCoordinates([
-            { latitude: userLocation.latitude, longitude: userLocation.longitude },
-            {
-              latitude: (userLocation.latitude + destinationLocation.latitude) / 2 + 0.002,
-              longitude: (userLocation.longitude + destinationLocation.longitude) / 2 - 0.001,
-            },
-            { latitude: destinationLocation.latitude, longitude: destinationLocation.longitude },
-          ]);
-        }
+    L.tileLayer('${tileUrl}', {
+      maxZoom: 19,
+      subdomains: ${isDark ? "'abcd'" : "'abc'"}
+    }).addTo(map);
+
+    // User Pickup Pin
+    var userIcon = L.divIcon({
+      className: 'custom-div-icon',
+      html: '<div class="pulse-pin"></div>',
+      iconSize: [26, 26],
+      iconAnchor: [13, 13]
+    });
+    L.marker([${userLat}, ${userLng}], { icon: userIcon }).addTo(map).bindPopup("Your Pickup Point");
+
+    // Destination Pin
+    ${destLat && destLng ? `
+      var destIcon = L.divIcon({
+        className: 'custom-div-icon',
+        html: '<div class="dest-pin">🏁</div>',
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+      });
+      L.marker([${destLat}, ${destLng}], { icon: destIcon }).addTo(map).bindPopup("${destName}");
+      
+      // Polyline route
+      L.polyline([[${userLat}, ${userLng}], [${destLat}, ${destLng}]], {
+        color: '#10B981',
+        weight: 4.5,
+        opacity: 0.95
+      }).addTo(map);
+
+      map.fitBounds([[${userLat}, ${userLng}], [${destLat}, ${destLng}]], { padding: [50, 50] });
+    ` : ''}
+
+    // Nearby Boda Drivers
+    var drivers = ${JSON.stringify(nearbyDrivers || [])};
+    drivers.forEach(function(d) {
+      if (d && d.location) {
+        var bIcon = L.divIcon({
+          className: 'custom-div-icon',
+          html: '<div class="boda-pin">🛵</div>',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14]
+        });
+        L.marker([d.location.latitude, d.location.longitude], { icon: bIcon }).addTo(map).bindPopup(d.name || "Available Boda");
       }
-    };
+    });
 
-    fetchFreeRoute();
-    return () => {
-      isMounted = false;
+    window.handleAction = function(action) {
+      if (action === 'zoomIn') map.zoomIn();
+      if (action === 'zoomOut') map.zoomOut();
+      if (action === 'recenter') map.setView([${userLat}, ${userLng}], 15);
     };
-  }, [destinationLocation?.latitude, destinationLocation?.longitude, userLocation?.latitude, userLocation?.longitude]);
+  </script>
+</body>
+</html>
+    `;
+  }, [userLocation.latitude, userLocation.longitude, destinationLocation?.latitude, destinationLocation?.longitude, nearbyDrivers, mapLayer]);
 
-  const isNativeMapAvailable = MapView !== null && Platform.OS !== 'web' && mapLayer !== 'VECTOR_RADAR';
+  const showWebViewMap = WebView !== null && Platform.OS !== 'web' && mapLayer !== 'VECTOR_RADAR';
 
   return (
     <View style={[styles.mapContainer, { height: height || Dimensions.get('window').height * 0.42 }]}>
-      {isNativeMapAvailable ? (
-        <MapView
-          ref={mapRef}
+      {showWebViewMap ? (
+        <WebView
+          ref={webViewRef}
+          originWhitelist={['*']}
+          source={{ html: leafletHtml }}
           style={StyleSheet.absoluteFillObject}
-          initialRegion={{
-            latitude: userLocation.latitude,
-            longitude: userLocation.longitude,
-            latitudeDelta: 0.035,
-            longitudeDelta: 0.035,
-          }}
-          mapType="none"
-          customMapStyle={mapLayer === 'OSM_DARK' ? UBER_DARK_MAP_STYLE : []}
-          showsUserLocation={false}
-          showsCompass={false}
-          showsTraffic={false}
-          rotateEnabled={true}
-          pitchEnabled={true}
-          scrollEnabled={true}
-          zoomEnabled={true}
-          onRegionChangeComplete={(r: any) => setCurrentRegion(r)}
-          onError={(e: any) => {
-            console.warn('Native MapView error, switching to Vector Radar:', e);
-            setMapLayer('VECTOR_RADAR');
-          }}
-        >
-          {/* Free Open-Source Map Tile Layer (CartoDB Dark or Standard OpenStreetMap Voyager) */}
-          {UrlTile && mapLayer === 'OSM_DARK' && (
-            <UrlTile
-              urlTemplate="https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-              maximumZ={19}
-              tileSize={256}
-              flipY={false}
-              zIndex={-1}
-            />
-          )}
-          {UrlTile && mapLayer === 'OSM_STANDARD' && (
-            <UrlTile
-              urlTemplate="https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
-              maximumZ={19}
-              tileSize={256}
-              flipY={false}
-              zIndex={-1}
-            />
-          )}
-
-          {/* 1. Rider User Marker */}
-          <Marker
-            coordinate={{ latitude: userLocation.latitude, longitude: userLocation.longitude }}
-            anchor={{ x: 0.5, y: 0.5 }}
-            title="Your Pickup Point"
-            description={userLocation.address || 'Pickup Point • West Pokot'}
-          >
-            <View style={styles.riderMarkerWrapper}>
-              <View style={styles.riderMarkerPulse} />
-              <View style={styles.riderMarkerCore} />
-            </View>
-          </Marker>
-
-          {/* 2. Destination Marker */}
-          {destinationLocation && (
-            <Marker
-              coordinate={{ latitude: destinationLocation.latitude, longitude: destinationLocation.longitude }}
-              anchor={{ x: 0.5, y: 0.9 }}
-              title={destinationLocation.placeName || 'Destination'}
-              description={destinationLocation.address}
-            >
-              <View style={styles.destMarkerBadge}>
-                <Ionicons name="flag" size={14} color="#FFF" />
-              </View>
-            </Marker>
-          )}
-
-          {/* 3. Nearby Idle Driver Markers */}
-          {!simulatedDriverPos &&
-            nearbyDrivers.map((drv) => (
-              <Marker
-                key={drv.id}
-                coordinate={{ latitude: drv.location.latitude, longitude: drv.location.longitude }}
-                anchor={{ x: 0.5, y: 0.5 }}
-                rotation={drv.location.heading || 0}
-                title={drv.name}
-                description="Available Boda"
-              >
-                <View style={styles.idleDriverPin}>
-                  <Ionicons name="bicycle" size={14} color="#FFF" />
-                </View>
-              </Marker>
-            ))}
-
-          {/* 4. Active En-Route Driver Marker */}
-          {simulatedDriverPos && (
-            <Marker
-              coordinate={{ latitude: simulatedDriverPos.latitude, longitude: simulatedDriverPos.longitude }}
-              anchor={{ x: 0.5, y: 0.5 }}
-              title="Driver En Route"
-              description="Speed: 32 km/h"
-            >
-              <View style={styles.enRouteDriverBubble}>
-                <Ionicons name="bicycle" size={16} color="#10B981" />
-                <Text style={styles.enRouteSpeedText}>32 km/h</Text>
-              </View>
-            </Marker>
-          )}
-
-          {/* 5. Glowing Route Polyline (OSRM Free Real-World Navigation) */}
-          {destinationLocation && Polyline && (
-            <Polyline
-              coordinates={
-                routeCoordinates.length > 0
-                  ? routeCoordinates
-                  : [
-                      { latitude: userLocation.latitude, longitude: userLocation.longitude },
-                      {
-                        latitude: (userLocation.latitude + destinationLocation.latitude) / 2 + 0.002,
-                        longitude: (userLocation.longitude + destinationLocation.longitude) / 2 - 0.001,
-                      },
-                      { latitude: destinationLocation.latitude, longitude: destinationLocation.longitude },
-                    ]
-              }
-              strokeColor="#10B981"
-              strokeWidth={4.5}
-              lineCap="round"
-              lineJoin="round"
-            />
-          )}
-        </MapView>
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+          startInLoadingState={false}
+          scalesPageToFit={false}
+          scrollEnabled={false}
+          onError={() => setMapLayer('VECTOR_RADAR')}
+        />
       ) : (
-        /* Smooth Vector Road Network Canvas Fallback (for Web / non-native preview) */
+        /* Smooth Vector Road Network Canvas Fallback */
         <View style={styles.fallbackCanvas}>
           <View style={[styles.fallbackHighway, { top: '24%', left: 0, right: 0, transform: [{ rotate: '-8deg' }] }]} />
           <View style={[styles.fallbackHighway, { top: '64%', left: 0, right: 0, transform: [{ rotate: '12deg' }] }]} />
@@ -375,13 +348,13 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
 
       {/* Floating Uber Map HUD: Status Pill & Free Map Mode Controls */}
       <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
-        <View style={styles.floatingEtaPill}>
+        <View style={[styles.floatingEtaPill, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
           <Ionicons
             name={activeTrip?.status === 'SEARCHING_DRIVER' ? 'radio' : 'flash'}
             size={13}
-            color="#10B981"
+            color={theme.primary}
           />
-          <Text style={styles.floatingEtaText}>
+          <Text style={[styles.floatingEtaText, { color: theme.textPrimary }]}>
             {activeTrip?.status === 'SEARCHING_DRIVER'
               ? 'Scanning nearby bodas...'
               : activeTrip
@@ -391,8 +364,8 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
         </View>
 
         {/* Free Map API Mode Indicator */}
-        <View style={styles.floatingApiBadge}>
-          <Text style={styles.floatingApiText}>
+        <View style={[styles.floatingApiBadge, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}>
+          <Text style={[styles.floatingApiText, { color: theme.textSecondary }]}>
             {mapLayer === 'OSM_DARK'
               ? '🌙 CartoDB OSM'
               : mapLayer === 'OSM_STANDARD'
@@ -401,12 +374,12 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
           </Text>
         </View>
 
-        <TouchableOpacity style={styles.recenterMapBtn} onPress={handleRecenter}>
-          <Ionicons name="locate" size={18} color="#F8FAFC" />
+        <TouchableOpacity style={[styles.recenterMapBtn, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]} onPress={handleRecenter}>
+          <Ionicons name="locate" size={18} color={theme.textPrimary} />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.mapToggleBtn}
+          style={[styles.mapToggleBtn, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]}
           onPress={() => {
             setMapLayer((current) => {
               if (current === 'OSM_DARK') return 'OSM_STANDARD';
@@ -419,16 +392,16 @@ export const IntegratedMapView: React.FC<IntegratedMapViewProps> = ({
           <Ionicons
             name={mapLayer === 'VECTOR_RADAR' ? 'cellular' : mapLayer === 'OSM_STANDARD' ? 'map' : 'layers'}
             size={18}
-            color="#10B981"
+            color={theme.primary}
           />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.zoomInBtn} onPress={() => handleZoom('in')} activeOpacity={0.8}>
-          <Ionicons name="add" size={18} color="#F8FAFC" />
+        <TouchableOpacity style={[styles.zoomInBtn, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]} onPress={() => handleZoom('in')} activeOpacity={0.8}>
+          <Ionicons name="add" size={18} color={theme.textPrimary} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.zoomOutBtn} onPress={() => handleZoom('out')} activeOpacity={0.8}>
-          <Ionicons name="remove" size={18} color="#F8FAFC" />
+        <TouchableOpacity style={[styles.zoomOutBtn, { backgroundColor: theme.cardBg, borderColor: theme.cardBorder }]} onPress={() => handleZoom('out')} activeOpacity={0.8}>
+          <Ionicons name="remove" size={18} color={theme.textPrimary} />
         </TouchableOpacity>
       </View>
     </View>
