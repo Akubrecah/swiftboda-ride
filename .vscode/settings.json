@@ -3,5 +3,24 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
+  },
+  "java.configuration.updateBuildConfiguration": "disabled",
+  "java.import.gradle.enabled": false,
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.git/**",
+    "**/dist/**",
+    "**/infra/**"
+  ],
+  "gradle.nestedProjects": false,
+  "gradle.autoDetect": "off",
+  "gradle.projectOpenStrategy": "NotOpen",
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/android/build/**": true,
+    "**/android/app/build/**": true,
+    "**/android/.gradle/**": true
   }
 }
