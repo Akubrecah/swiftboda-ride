@@ -19,7 +19,7 @@
 11. [📂 Repository Directory Structure](#-repository-directory-structure)
 12. [🧪 Automated Testing & Verification Commands](#-automated-testing--verification-commands)
 13. [🚀 Production Deployment & Scaling Strategy](#-production-deployment--scaling-strategy)
-14. [📄 License & Maintenance](#-license--maintenance)
+14. [📄 License, Author & Maintenance](#-license-author--maintenance)
 
 ---
 
@@ -472,8 +472,17 @@ npm run test:serply
 
 ---
 
-## 📄 License & Maintenance
+## 📄 License, Author & Maintenance
 
-This project is licensed under the **MIT License** — see the [LICENSE](./LICENSE) file for details.
+### License
+This project is open-sourced under the **[MIT License](./LICENSE)** — authored and maintained by **[Akubrecah](https://github.com/Akubrecah)**.
 
-Developed with ❤️ for hyper-local transportation across Kenya.
+### Author & Lead Maintainer
+- **Architect & Developer**: [Akubrecah](https://github.com/Akubrecah)
+- **GitHub Profile**: [@Akubrecah](https://github.com/Akubrecah)
+- **Repository**: [swiftboda-ride](https://github.com/Akubrecah/swiftboda-ride)
+- **Contact & Inquiries**: [poweldayck@gmail.com](mailto:poweldayck@gmail.com)
+
+---
+
+Developed with ❤️ by **[Akubrecah](https://github.com/Akubrecah)** for hyper-local transportation, driver empowerment, and digital mobility across Kenya.
