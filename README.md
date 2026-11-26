@@ -485,4 +485,4 @@ This project is open-sourced under the **[MIT License](./LICENSE)** — authored
 
 ---
 
-Developed with ❤️ by **[Akubrecah](https://github.com/Akubrecah)** for hyper-local transportation, driver empowerment, and digital mobility across Kenya.
+Developed by **[Akubrecah](https://github.com/Akubrecah)** for hyper-local transportation, driver empowerment, and digital mobility across Kenya.
